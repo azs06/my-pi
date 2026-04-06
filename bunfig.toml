@@ -1,0 +1,6 @@
+# bunfig.toml – Bun configuration for my-pi
+
+[build]
+# Minify the bundle for smaller release binaries (overridden per-target).
+minify = true
+target = "bun"
