@@ -10,7 +10,6 @@ your workflow.
 ## Architecture
 
 ```
-
 📱 Telegram ─┐
              ├──► ChatGateway ──► PiSessionManager
 💬 Slack ────┤
