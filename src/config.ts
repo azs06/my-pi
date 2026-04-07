@@ -43,6 +43,7 @@ export interface Config {
   discord?: DiscordConfig;
 
   cronJobsFile: string;
+  remindersFile: string;
   defaultWorkDir: string;
 
   sessionIdleTimeoutMs: number;
@@ -50,6 +51,7 @@ export interface Config {
   maxQueueDepth: number;
   rateLimitMs: number;
   sqliteDbPath: string;
+  notesDbPath: string;
   restoreRecentTurns: number;
 }
 
@@ -119,6 +121,8 @@ export const config: Config = {
 
   cronJobsFile:
     process.env.CRON_JOBS_FILE ?? resolve(homedir(), ".my-pi", "cron-jobs.json"),
+  remindersFile:
+    process.env.REMINDERS_FILE ?? resolve(homedir(), ".my-pi", "reminders.json"),
   defaultWorkDir,
 
   // Tunables – override via env vars, sane defaults for Raspberry Pi
@@ -127,5 +131,6 @@ export const config: Config = {
   rateLimitMs:          Number(process.env.RATE_LIMIT_MS)           || 2_000,
   maxQueueDepth:        Number(process.env.MAX_QUEUE_DEPTH)         || 3,
   sqliteDbPath:          process.env.SQLITE_DB_PATH ?? resolve(homedir(), ".my-pi", "messages.db"),
+  notesDbPath:           process.env.NOTES_DB_PATH  ?? resolve(homedir(), ".my-pi", "notes.db"),
   restoreRecentTurns:    Number(process.env.RESTORE_RECENT_TURNS)   || 5,
 };

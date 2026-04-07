@@ -10,6 +10,8 @@
  *  • Progress updates via message editing
  *  • Rate limiting
  */
+import { createReadStream } from "node:fs";
+import { basename } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import type { ProgressUpdate } from "./pi-session.js";
@@ -78,6 +80,15 @@ export class SlackGateway implements ChatGateway {
         text: chunk,
       });
     }
+  }
+
+  async sendFileTo(chatId: string, filePath: string, caption?: string): Promise<void> {
+    await this.web.files.uploadV2({
+      channel_id: chatId,
+      file: createReadStream(filePath),
+      filename: basename(filePath),
+      initial_comment: caption,
+    });
   }
 
   async stop(): Promise<void> {

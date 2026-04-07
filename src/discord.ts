@@ -18,7 +18,9 @@ import {
 } from "discord.js";
 
 /** Minimal interface satisfied by every sendable Discord channel. */
-type SendableChannel = { send(content: string): Promise<Message> };
+type SendableChannel = {
+  send(content: string | { content?: string; files: string[] }): Promise<Message>;
+};
 import type { ProgressUpdate } from "./pi-session.js";
 import type { ChatGateway, GatewayMessageHandler } from "./gateway.js";
 import { config } from "./config.js";
@@ -104,6 +106,17 @@ export class DiscordGateway implements ChatGateway {
     for (const chunk of splitDiscordMessage(text)) {
       await (channel as unknown as SendableChannel).send(chunk);
     }
+  }
+
+  async sendFileTo(chatId: string, filePath: string, caption?: string): Promise<void> {
+    const channel = await this.client.channels.fetch(chatId);
+    if (!channel?.isTextBased() || !('send' in channel)) {
+      throw new Error(`[Discord] Channel ${chatId} not found or not sendable`);
+    }
+    await (channel as unknown as SendableChannel).send({
+      content: caption,
+      files: [filePath],
+    });
   }
 
   async stop(): Promise<void> {

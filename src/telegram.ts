@@ -45,6 +45,13 @@ export class TelegramGateway implements ChatGateway {
     }
   }
 
+  async sendFileTo(chatId: string, filePath: string, caption?: string): Promise<void> {
+    await this.bot.sendDocument(chatId, filePath, {
+      caption,
+      parse_mode: "Markdown",
+    });
+  }
+
   async stop(): Promise<void> {
     await this.bot.stopPolling();
   }

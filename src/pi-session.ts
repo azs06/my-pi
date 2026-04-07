@@ -22,9 +22,9 @@ import {
   createCodingTools,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentSession, AgentSessionEvent } from "@mariozechner/pi-coding-agent";
-import type { CronJob, CronManager } from "./db/index.js";
+import type { CronJob, CronManager, ReminderManager, NoteStore } from "./db/index.js";
 import type { MessageStore } from "./db/index.js";
-import type { MessageSender } from "./pi-tools.js";
+import type { MessageSender, FileSender } from "./pi-tools.js";
 import { buildCustomTools } from "./pi-tools.js";
 import { config } from "./config.js";
 
@@ -42,6 +42,14 @@ You have access to bash, file-system tools, and these custom tools:
 
 • send_message          – push an important result to the user immediately
   (always use this after creating a PR to share the URL)
+• send_file            – send a file (image, PDF, CSV, log, etc.) to the user
+• web_fetch            – fetch a URL and return its content as text
+• save_note            – save a note to the personal knowledge base
+• search_notes         – search or list notes by keyword or tag
+• delete_note          – remove a saved note
+• set_reminder         – set a one-time reminder at a specific time
+• list_reminders       – list pending reminders
+• delete_reminder      – cancel a pending reminder
 • schedule_task        – register a recurring cron job
 • list_cron_jobs       – list all scheduled jobs
 • delete_cron_job      – remove a scheduled job
@@ -51,6 +59,10 @@ Capabilities:
   - Create GitHub pull requests with the \`gh\` CLI
   - Write blog posts, code, documentation
   - Schedule recurring tasks (cron jobs)
+  - Set one-time reminders ("remind me in 2 hours to…")
+  - Fetch and read web pages, articles, API endpoints
+  - Save and search personal notes (knowledge base)
+  - Send files (images, PDFs, CSVs, etc.) directly in chat
   - Run arbitrary shell commands
 
 Guidelines:
@@ -112,7 +124,11 @@ export class PiSessionManager {
   constructor(
     private readonly defaultSend: MessageSender,
     private readonly sendToChat: (chatId: string, message: string) => Promise<void>,
+    private readonly defaultSendFile: FileSender,
+    private readonly sendFileToChat: (chatId: string, filePath: string, caption?: string) => Promise<void>,
     private readonly cronManager: CronManager,
+    private readonly reminderManager: ReminderManager,
+    private readonly noteStore: NoteStore,
     private readonly store: MessageStore
   ) {
     this.modelRegistry = ModelRegistry.create(this.authStorage);
@@ -246,7 +262,11 @@ export class PiSessionManager {
 
     const customTools = buildCustomTools(
       (message) => this.sendToChat(chatId, message),
-      this.cronManager
+      (filePath, caption) => this.sendFileToChat(chatId, filePath, caption),
+      this.cronManager,
+      this.noteStore,
+      this.reminderManager,
+      chatId
     );
 
     const loader = new DefaultResourceLoader({
@@ -392,7 +412,7 @@ export class PiSessionManager {
       sentViaTool = true;
       await this.defaultSend(msg);
     };
-    const cronTools = buildCustomTools(trackingSend, this.cronManager);
+    const cronTools = buildCustomTools(trackingSend, this.defaultSendFile, this.cronManager, this.noteStore);
 
     const loader = new DefaultResourceLoader({
       cwd: job.workDir,

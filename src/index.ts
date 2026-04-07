@@ -8,7 +8,7 @@
  * The CHANNEL_TYPE env var selects which gateway to start.
  */
 import { config } from "./config.js";
-import { CronManager, MessageStore } from "./db/index.js";
+import { CronManager, ReminderManager, NoteStore, MessageStore } from "./db/index.js";
 import { PiSessionManager } from "./pi-session.js";
 import type { ChatGateway, GatewayMessageHandler } from "./gateway.js";
 import type { ProgressUpdate } from "./pi-session.js";
@@ -34,6 +34,18 @@ async function main(): Promise<void> {
     }
   );
 
+  // ── Note store (SQLite) ──────────────────────────────────────────────────────
+  const noteStore = new NoteStore(config.notesDbPath);
+
+  // ── Reminder manager ──────────────────────────────────────────────────────────
+  const reminderManager = new ReminderManager(
+    config.remindersFile,
+    async (reminder) => {
+      const msg = `⏰ *Reminder*\n${reminder.message}`;
+      await gateway.sendTo(reminder.chatId, msg);
+    }
+  );
+
   // ── The send function: outbound messages through whatever gateway is active ─
   const send = async (text: string): Promise<void> => {
     await gateway.send(text);
@@ -41,9 +53,23 @@ async function main(): Promise<void> {
   const sendTo = async (chatId: string, text: string): Promise<void> => {
     await gateway.sendTo(chatId, text);
   };
+  const sendFile = async (filePath: string, caption?: string): Promise<void> => {
+    await gateway.sendFileTo(
+      config.channelType === "telegram"
+        ? config.telegram!.allowedChatId
+        : config.channelType === "discord"
+          ? config.discord!.defaultChannel
+          : config.slack!.defaultChannel,
+      filePath,
+      caption
+    );
+  };
+  const sendFileTo = async (chatId: string, filePath: string, caption?: string): Promise<void> => {
+    await gateway.sendFileTo(chatId, filePath, caption);
+  };
 
   // ── Pi session manager ──────────────────────────────────────────────────────
-  piSessions = new PiSessionManager(send, sendTo, cronManager, messageStore);
+  piSessions = new PiSessionManager(send, sendTo, sendFile, sendFileTo, cronManager, reminderManager, noteStore, messageStore);
 
   // ── Message handler (shared by both gateways) ──────────────────────────────
   const onMessage: GatewayMessageHandler = (
@@ -102,17 +128,18 @@ async function main(): Promise<void> {
     gateway = slackGw;
   }
 
-  // ── Load saved cron jobs (starts scheduling) ─────────────────────────────────
+  // ── Load saved cron jobs + reminders (starts scheduling) ────────────────────
   await cronManager.load();
+  await reminderManager.load();
 
   // ── Startup notification ─────────────────────────────────────────────────────
   try {
     await send(
     config.channelType === "slack"
-        ? `*Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron jobs: ${cronManager.listJobs().length} loaded_`
+        ? `*Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}_`
         : config.channelType === "discord"
-        ? `**Pi assistant is online!**\nWorking dir: \`${config.defaultWorkDir}\`\nCron jobs: ${cronManager.listJobs().length} loaded`
-        : `🤖 *Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron jobs: ${cronManager.listJobs().length} loaded_`
+        ? `**Pi assistant is online!**\nWorking dir: \`${config.defaultWorkDir}\`\nCron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}`
+        : `🤖 *Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}_`
     );
   } catch (err) {
     console.warn("[Startup] Could not send startup message:", err);
@@ -125,6 +152,8 @@ async function main(): Promise<void> {
     console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
     piSessions.shutdown();
     cronManager.shutdown();
+    reminderManager.shutdown();
+    noteStore.close();
     messageStore.close();
     await gateway.stop();
     process.exit(0);

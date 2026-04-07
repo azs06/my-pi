@@ -13,9 +13,14 @@ process.env.SQLITE_DB_PATH = join(tmpdir(), "my-pi-test-messages.db");
 
 const { PiSessionManager } = await import("../src/pi-session.js");
 const { CronManager } = await import("../src/db/cron-manager.js");
+const { ReminderManager } = await import("../src/db/reminder-manager.js");
 const { DiscordGateway } = await import("../src/discord.js");
 const { SlackGateway } = await import("../src/slack.js");
 const { TelegramGateway } = await import("../src/telegram.js");
+const {
+  makeListRemindersTool,
+  makeDeleteReminderTool,
+} = await import("../src/pi-tools.js");
 
 test("PiSessionManager persists messages even when a prompt throws", async () => {
   const saved: Array<{ chatId: string; messages: unknown[] }> = [];
@@ -30,6 +35,10 @@ test("PiSessionManager persists messages even when a prompt throws", async () =>
   const manager = new PiSessionManager(
     async () => {},
     async () => {},
+    async () => {},
+    async () => {},
+    {} as never,
+    {} as never,
     {} as never,
     {
       saveMessages(chatId: string, messages: unknown[]) {
@@ -69,6 +78,92 @@ test("CronManager preserves unreadable job files instead of overwriting them", a
 
   const files = await readdir(dir);
   assert.ok(files.some((name) => name.startsWith("cron-jobs.json.corrupt-")));
+});
+
+test("ReminderManager preserves unreadable reminder files instead of overwriting them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-reminders-"));
+  const remindersFile = join(dir, "reminders.json");
+  await writeFile(remindersFile, "{ definitely not json", "utf8");
+
+  const reminders = new ReminderManager(remindersFile, async () => {});
+  await reminders.load();
+
+  assert.deepEqual(reminders.listReminders(), []);
+
+  const current = JSON.parse(await readFile(remindersFile, "utf8")) as { reminders: unknown[] };
+  assert.deepEqual(current, { reminders: [] });
+
+  const files = await readdir(dir);
+  assert.ok(files.some((name) => name.startsWith("reminders.json.corrupt-")));
+  reminders.shutdown();
+});
+
+test("Reminder tools only expose reminders for the active chat", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-reminder-scope-"));
+  const remindersFile = join(dir, "reminders.json");
+  const reminders = new ReminderManager(remindersFile, async () => {});
+  await reminders.load();
+
+  const own = await reminders.addReminder({
+    message: "Own reminder",
+    fireAt: new Date(Date.now() + 60_000).toISOString(),
+    chatId: "chat-1",
+  });
+  const other = await reminders.addReminder({
+    message: "Other reminder",
+    fireAt: new Date(Date.now() + 60_000).toISOString(),
+    chatId: "chat-2",
+  });
+
+  const listTool = makeListRemindersTool(reminders, "chat-1") as any;
+  const listResult = await listTool.execute("tool-1", {});
+  const listText = listResult.content[0]?.text ?? "";
+  assert.match(listText, /Own reminder/);
+  assert.doesNotMatch(listText, /Other reminder/);
+
+  const deleteTool = makeDeleteReminderTool(reminders, "chat-1") as any;
+  const deleteResult = await deleteTool.execute("tool-2", { reminderId: other.id });
+  assert.equal(deleteResult.details.deleted, false);
+  assert.deepEqual(
+    reminders.listReminders("chat-2").map((reminder) => reminder.id),
+    [other.id]
+  );
+
+  await reminders.deleteReminder(own.id, "chat-1");
+  await reminders.deleteReminder(other.id, "chat-2");
+  reminders.shutdown();
+});
+
+test("ReminderManager keeps reminders pending when delivery fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-reminder-retry-"));
+  const remindersFile = join(dir, "reminders.json");
+  let attempts = 0;
+  const reminders = new ReminderManager(remindersFile, async () => {
+    attempts++;
+    throw new Error("delivery failed");
+  });
+  await reminders.load();
+
+  try {
+    const reminder = await reminders.addReminder({
+      message: "Retry me",
+      fireAt: new Date(Date.now() - 1_000).toISOString(),
+      chatId: "chat-1",
+    });
+
+    const deadline = Date.now() + 250;
+    while (attempts === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    assert.equal(attempts, 1);
+    assert.deepEqual(
+      reminders.listReminders("chat-1").map((entry) => entry.id),
+      [reminder.id]
+    );
+  } finally {
+    reminders.shutdown();
+  }
 });
 
 test("DiscordGateway.start logs in only once when called concurrently", async () => {

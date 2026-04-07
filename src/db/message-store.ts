@@ -3,52 +3,8 @@
  *
  * Keeps messages on disk so sessions can be evicted from RAM (critical on
  * Raspberry Pi) and later restored with full context.
- *
- * Runtime auto-detection:
- *  • Bun (runtime + compiled binary) → bun:sqlite (built-in, no native addon)
- *  • Node.js / tsx                   → better-sqlite3 (native addon)
- *
- * Both expose the same synchronous API (.exec, .prepare, .run, .get, .all)
- * so the rest of the code is runtime-agnostic.
  */
-import { mkdirSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname } from "node:path";
-
-const require = createRequire(import.meta.url);
-
-// ─── Minimal interface that both bun:sqlite and better-sqlite3 satisfy ──────
-
-interface Statement {
-  run(...params: unknown[]): unknown;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
-}
-
-interface Database {
-  exec(sql: string): void;
-  prepare(sql: string): Statement;
-  close(): void;
-  transaction<T>(fn: (...args: unknown[]) => T): (...args: unknown[]) => T;
-}
-
-// ─── Open the right SQLite driver ──────────────────────────────────────────
-
-function openDatabase(path: string): Database {
-  mkdirSync(dirname(path), { recursive: true });
-
-  // Bun (runtime or compiled binary) — bun:sqlite is always present
-  if (typeof (globalThis as Record<string, unknown>).Bun !== "undefined") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Database: BunDB } = require("bun:sqlite");
-    return new BunDB(path) as Database;
-  }
-
-  // Node.js / tsx — use better-sqlite3 from node_modules
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const BetterSqlite = require("better-sqlite3");
-  return new BetterSqlite(path) as Database;
-}
+import { openDatabase, type Database } from "./sqlite.js";
 
 // ─── MessageStore ──────────────────────────────────────────────────────────
 

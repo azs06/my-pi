@@ -25,6 +25,9 @@ export interface ChatGateway {
   /** Send a message to a specific chat/channel. */
   sendTo(chatId: string, text: string): Promise<void>;
 
+  /** Send a file to a specific chat/channel. */
+  sendFileTo(chatId: string, filePath: string, caption?: string): Promise<void>;
+
   /** Cleanly stop the gateway. */
   stop(): Promise<void>;
 }
