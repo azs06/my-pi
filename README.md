@@ -1,6 +1,6 @@
-# My Pi - A work in Progress, Using Pi as a mini claw
+# My Pi - A work in Progress, Using Pi as a mini claw(personal assistant)
 
-Run Pi 24/7, talk to it from your phone via **Telegram** or **Slack**, schedule
+Run Pi 24/7, talk to it from your phone via **Telegram**, **Slack**, or **Discord**, schedule
 recurring tasks (cron jobs) and receive results (PR URLs, blog links, etc.)
 directly in chat. Only one channel is active at a time — pick whichever fits
 your workflow.
@@ -12,7 +12,8 @@ your workflow.
 ```
 📱 Telegram ─┐
              ├──► ChatGateway ──► PiSessionManager
-💬 Slack ────┘         │                │
+💬 Slack ────┤
+🎮 Discord ──┘         │                │
                        │    ┌───────────┴─────────────────┐
                        │    │                              │
                        │  Interactive sessions       Cron sessions
@@ -29,9 +30,9 @@ your workflow.
               (shared ChatGateway interface)
 ```
 
-Both gateways implement the same `ChatGateway` interface (`gateway.ts`), so the
-rest of the system is channel-agnostic. Set `CHANNEL_TYPE=telegram` or
-`CHANNEL_TYPE=slack` in `.env` to choose.
+All three gateways implement the same `ChatGateway` interface (`gateway.ts`), so the
+rest of the system is channel-agnostic. Set `CHANNEL_TYPE=telegram`, `CHANNEL_TYPE=slack`,
+or `CHANNEL_TYPE=discord` in `.env` to choose.
 
 When Pi finishes a task it can push interim messages via the `send_message` tool
 (e.g., share a PR URL the moment it's created). Cron jobs always report results
@@ -55,7 +56,7 @@ never called.
 
 ### 1 – Choose your channel
 
-Set `CHANNEL_TYPE` in `.env` to **`telegram`** (default) or **`slack`**.
+Set `CHANNEL_TYPE` in `.env` to **`telegram`** (default), **`slack`**, or **`discord`**.
 Only one channel is active per instance.
 
 ---
@@ -90,7 +91,52 @@ DEFAULT_WORK_DIR=/Users/you/projects
 
 ---
 
-### Option B – Slack
+### Option B – Discord
+
+#### Create a Discord bot
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
+2. Under **Bot**, click **Add Bot** and copy the **Token**.
+3. Enable the following **Privileged Gateway Intents**:
+   - `Server Members Intent`
+   - `Message Content Intent`
+4. Under **OAuth2 → URL Generator**, select scopes:
+   - `bot`
+   and bot permissions:
+   - `Read Messages/View Channels`
+   - `Send Messages`
+   - `Read Message History`
+5. Use the generated URL to invite the bot to your server.
+
+#### Find your channel and user IDs
+
+Enable **Developer Mode** in Discord settings (*App Settings → Advanced → Developer Mode*), then:
+- **Channel ID**: right-click a channel → *Copy Channel ID*.
+- **User ID**: right-click a user → *Copy User ID*.
+
+#### Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+CHANNEL_TYPE=discord
+DISCORD_BOT_TOKEN=your_bot_token_here
+DISCORD_DEFAULT_CHANNEL=1234567890123456789   # channel ID for cron results
+DISCORD_ALLOWED_USERS=1234567890123456789     # comma-separated; empty = open access
+ANTHROPIC_API_KEY=sk-ant-…                   # optional if already in auth.json
+DEFAULT_WORK_DIR=/Users/you/projects
+```
+
+> **Tip:** Pi responds to @mentions in server channels and to any message in DMs.
+> Type `/start` for a quick intro, `/reset` to clear the session.
+
+---
+
+### Option C – Slack
 
 #### Create a Slack app
 
@@ -190,7 +236,7 @@ Disable the daily blog job
 
 ### Reset conversation
 
-Type `/reset` (Telegram) or `reset` (Slack DM / @mention) to start a fresh Pi
+Type `/reset` (Telegram / Discord) or `reset` (Slack DM / @mention) to start a fresh Pi
 session (clears context).
 
 ---
@@ -301,6 +347,7 @@ my-pi/
 │   ├── gateway.ts            # ChatGateway interface shared by all channels
 │   ├── telegram.ts           # Telegram bot (polling, progress edits, send)
 │   ├── slack.ts              # Slack bot (Socket Mode, mentions, DMs)
+│   ├── discord.ts            # Discord bot (discord.js v14, mentions, DMs)
 │   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
 │   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
 ├── .env.example
