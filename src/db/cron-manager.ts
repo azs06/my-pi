@@ -5,7 +5,7 @@
  * Each job carries a cron expression, a task description, and a workDir.
  * When a job fires, `taskRunner` is called with the job object.
  */
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -61,6 +61,7 @@ export class CronManager {
         `[CronManager] Failed to parse ${this.jobsFile}, starting fresh:`,
         err instanceof Error ? err.message : err
       );
+      await this.quarantineUnreadableJobsFile();
       await this.persist();
       return;
     }
@@ -173,11 +174,42 @@ export class CronManager {
   private persistPending: Promise<void> = Promise.resolve();
 
   private async persist(): Promise<void> {
-    // Serialize writes so a later snapshot never lands before an earlier one
-    this.persistPending = this.persistPending.then(async () => {
+    // Serialize writes so a later snapshot never lands before an earlier one.
+    // The queue tail swallows errors to keep future writes alive, while the
+    // returned promise preserves the actual write outcome for the caller.
+    const write = this.persistPending.then(async () => {
       const data = { jobs: Array.from(this.jobs.values()) };
-      await writeFile(this.jobsFile, JSON.stringify(data, null, 2), "utf-8");
+      const tempFile = `${this.jobsFile}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        await writeFile(tempFile, JSON.stringify(data, null, 2), "utf-8");
+        await rename(tempFile, this.jobsFile);
+      } catch (err) {
+        await rm(tempFile, { force: true }).catch(() => {});
+        throw err;
+      }
     });
-    return this.persistPending;
+
+    this.persistPending = write.catch((err) => {
+      console.error("[CronManager] Failed to persist jobs:", err);
+    });
+
+    return write;
+  }
+
+  private async quarantineUnreadableJobsFile(): Promise<void> {
+    if (!existsSync(this.jobsFile)) return;
+
+    const backupFile = `${this.jobsFile}.corrupt-${Date.now()}`;
+    try {
+      await rename(this.jobsFile, backupFile);
+      console.warn(
+        `[CronManager] Moved unreadable jobs file to ${backupFile} for manual recovery.`
+      );
+    } catch (err) {
+      console.error(
+        `[CronManager] Failed to preserve unreadable jobs file ${this.jobsFile}:`,
+        err
+      );
+    }
   }
 }

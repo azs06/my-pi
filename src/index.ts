@@ -2,34 +2,28 @@
  * index.ts – Entry point.
  *
  * Wires together:
- *   TelegramGateway → PiSessionManager
- *   CronManager     → PiSessionManager (cron task runner)
+ *   ChatGateway (Telegram | Slack) → PiSessionManager
+ *   CronManager                    → PiSessionManager
  *
- * Startup order:
- *   1. Load config
- *   2. Init PiSessionManager (auth + model registry)
- *   3. Init CronManager and load saved jobs
- *   4. Wire dependencies
- *   5. Start Telegram polling
- *   6. Arm graceful shutdown
+ * The CHANNEL_TYPE env var selects which gateway to start.
  */
 import { config } from "./config.js";
-import { CronManager } from "./cron-manager.js";
+import { CronManager, MessageStore } from "./db/index.js";
 import { PiSessionManager } from "./pi-session.js";
-import { TelegramGateway } from "./telegram.js";
+import type { ChatGateway, GatewayMessageHandler } from "./gateway.js";
 import type { ProgressUpdate } from "./pi-session.js";
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  console.log("🚀 Starting Pi Telegram bridge…");
+  console.log(`🚀 Starting Pi ${config.channelType} bridge…`);
 
-  // ── Pi session manager ──────────────────────────────────────────────────────
-  // Constructed after Telegram gateway so we can inject `send` directly.
+  // ── Message store (SQLite) ──────────────────────────────────────────────────
+  const messageStore = new MessageStore(config.sqliteDbPath);
+
+  // ── Forward-declared so the `send` closure can capture it ──────────────────
+  let gateway: ChatGateway;
   let piSessions: PiSessionManager;
-
-  // ── Telegram gateway (needs a `send` function → wired below) ───────────────
-  let telegramGateway: TelegramGateway;
 
   // ── Cron manager ─────────────────────────────────────────────────────────────
   const cronManager = new CronManager(
@@ -40,43 +34,73 @@ async function main(): Promise<void> {
     }
   );
 
-  // ── Wire Pi ↔ Telegram ↔ Cron ────────────────────────────────────────────────
+  // ── The send function: outbound messages through whatever gateway is active ─
   const send = async (text: string): Promise<void> => {
-    await telegramGateway.send(text);
+    await gateway.send(text);
+  };
+  const sendTo = async (chatId: string, text: string): Promise<void> => {
+    await gateway.sendTo(chatId, text);
   };
 
-  piSessions = new PiSessionManager(send, cronManager);
+  // ── Pi session manager ──────────────────────────────────────────────────────
+  piSessions = new PiSessionManager(send, sendTo, cronManager, messageStore);
 
-  // ── Start Telegram bot ───────────────────────────────────────────────────────
-  telegramGateway = new TelegramGateway(
-    config.telegramToken,
-    config.allowedChatId,
-    (
-      text: string,
-      chatId: string,
-      onProgress: (update: ProgressUpdate) => void,
-      onDone: (text: string) => void,
-      onError: (err: Error) => void
-    ) => {
-      // Special command: reset the session for this chat
-      if (text.trim().toLowerCase() === "/reset") {
-        piSessions.dropSession(chatId).then(() => {
-          void send("🔄 Session reset. Starting fresh!").catch(console.error);
-        }).catch(console.error);
-        onDone(""); // signal done with no text
-        return;
-      }
-
-      piSessions.enqueue(
-        chatId,
-        text,
-        config.defaultWorkDir,
-        onProgress,
-        onDone,
-        onError
-      );
+  // ── Message handler (shared by both gateways) ──────────────────────────────
+  const onMessage: GatewayMessageHandler = (
+    text: string,
+    chatId: string,
+    onProgress: (update: ProgressUpdate) => void,
+    onDone: (text: string) => void,
+    onError: (err: Error) => void
+  ) => {
+    // /reset – clear session + SQLite history
+    if (text.trim().toLowerCase() === "/reset") {
+      piSessions.dropSession(chatId).then(async () => {
+        await sendTo(chatId, "🔄 Session reset. Starting fresh!").catch(console.error);
+        onDone("");
+      }).catch(onError);
+      return;
     }
-  );
+
+    piSessions.enqueue(
+      chatId,
+      text,
+      config.defaultWorkDir,
+      onProgress,
+      onDone,
+      onError
+    );
+  };
+
+  // ── Start the selected gateway ────────────────────────────────────────────
+  if (config.channelType === "telegram") {
+    const { TelegramGateway } = await import("./telegram.js");
+    const tg = config.telegram!;
+    gateway = new TelegramGateway(tg.token, tg.allowedChatId, onMessage);
+  } else if (config.channelType === "discord") {
+    const { DiscordGateway } = await import("./discord.js");
+    const dc = config.discord!;
+    const discordGw = new DiscordGateway(
+      dc.token,
+      dc.defaultChannel,
+      dc.allowedUsers,
+      onMessage
+    );
+    await discordGw.start();
+    gateway = discordGw;
+  } else {
+    const { SlackGateway } = await import("./slack.js");
+    const sl = config.slack!;
+    const slackGw = new SlackGateway(
+      sl.appToken,
+      sl.botToken,
+      sl.defaultChannel,
+      sl.allowedUsers,
+      onMessage
+    );
+    await slackGw.start();
+    gateway = slackGw;
+  }
 
   // ── Load saved cron jobs (starts scheduling) ─────────────────────────────────
   await cronManager.load();
@@ -84,21 +108,25 @@ async function main(): Promise<void> {
   // ── Startup notification ─────────────────────────────────────────────────────
   try {
     await send(
-      "🤖 *Pi assistant is online!*\n" +
-        `_Working dir: \`${config.defaultWorkDir}\`_\n` +
-        `_Cron jobs: ${cronManager.listJobs().length} loaded_`
+    config.channelType === "slack"
+        ? `*Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron jobs: ${cronManager.listJobs().length} loaded_`
+        : config.channelType === "discord"
+        ? `**Pi assistant is online!**\nWorking dir: \`${config.defaultWorkDir}\`\nCron jobs: ${cronManager.listJobs().length} loaded`
+        : `🤖 *Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron jobs: ${cronManager.listJobs().length} loaded_`
     );
   } catch (err) {
     console.warn("[Startup] Could not send startup message:", err);
   }
 
-  console.log("✅ Pi Telegram bridge is running. Ctrl+C to stop.");
+  console.log(`✅ Pi ${config.channelType} bridge is running. Ctrl+C to stop.`);
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
+    piSessions.shutdown();
     cronManager.shutdown();
-    await telegramGateway.stop();
+    messageStore.close();
+    await gateway.stop();
     process.exit(0);
   };
 

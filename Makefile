@@ -36,6 +36,7 @@ build-all: dist copy-assets
 # detects it's running inside a Bun compiled binary.
 copy-assets: dist
 	@echo "📦  Copying Pi SDK runtime assets → dist/"
+	@rm -rf dist/theme dist/export-html dist/package.json
 	@cp    $(PI_SDK)/package.json              dist/package.json
 	@cp -r $(PI_SDK)/dist/modes/interactive/theme \
 	       dist/theme

@@ -1,11 +1,13 @@
 {
   "name": "my-pi",
   "version": "1.0.0",
-  "description": "Pi agent accessible via Telegram with cron job scheduling",
+  "description": "My Pi is a personal coding assistant that integrates with Telegram, Slack, and Discord, providing a seamless interface for managing coding tasks, receiving notifications, and interacting with the Pi Coding Agent.",
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "prebuild": "node -e \"const fs=require('fs'),p=require('path');const s='node_modules/@mariozechner/pi-coding-agent';fs.mkdirSync('dist',{recursive:true});fs.rmSync('dist/theme',{recursive:true,force:true});fs.rmSync('dist/export-html',{recursive:true,force:true});fs.cpSync(p.join(s,'package.json'),'dist/package.json');fs.cpSync(p.join(s,'dist/modes/interactive/theme'),'dist/theme',{recursive:true});fs.cpSync(p.join(s,'dist/core/export-html'),'dist/export-html',{recursive:true});\"",
     "build": "bun build src/index.ts --compile --minify --outfile dist/my-pi",
     "build:debug": "bun build src/index.ts --compile --sourcemap=inline --outfile dist/my-pi-debug",
     "build:mac-arm": "bun build src/index.ts --compile --minify --target=bun-darwin-arm64  --outfile dist/my-pi-mac-arm64",
@@ -17,17 +19,20 @@
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.65.2",
     "@sinclair/typebox": "^0.34.0",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
+    "better-sqlite3": "^12.8.0",
+    "discord.js": "^14.26.2",
+    "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
-    "node-telegram-bot-api": "^0.66.0",
-    "uuid": "^11.1.0",
-    "dotenv": "^16.4.5"
+    "node-telegram-bot-api": "^0.66.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22",
     "@types/node-cron": "^3.0.11",
     "@types/node-telegram-bot-api": "^0.64.8",
-    "@types/uuid": "^10.0.0",
-    "typescript": "^5.4.5",
-    "tsx": "^4.11.0"
+    "tsx": "^4.11.0",
+    "typescript": "^5.4.5"
   }
 }

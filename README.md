@@ -1,32 +1,42 @@
 # My Pi - A work in Progress, Using Pi as a mini claw
 
-Run Pi 24/7, talk to it from your phone via Telegram, schedule recurring tasks
-(cron jobs) and receive results (PR URLs, blog links, etc.) directly in chat.
+Run Pi 24/7, talk to it from your phone via **Telegram** or **Slack**, schedule
+recurring tasks (cron jobs) and receive results (PR URLs, blog links, etc.)
+directly in chat. Only one channel is active at a time — pick whichever fits
+your workflow.
 
 ---
 
 ## Architecture
 
 ```
-📱 Telegram ──► TelegramGateway ──► PiSessionManager
-                                          │
-                          ┌───────────────┴─────────────────┐
-                          │                                  │
-               Interactive sessions                   Cron sessions
-               (one per chat, persistent)         (ephemeral, one per job)
-                          │                                  │
-                   Pi agent (SDK)                    Pi agent (SDK)
-                          │                                  │
-                   Custom tools ◄───────────── CronManager
-                          │
-                   send_telegram_message
-                   schedule_task / list / delete / toggle
+📱 Telegram ─┐
+             ├──► ChatGateway ──► PiSessionManager
+💬 Slack ────┘         │                │
+                       │    ┌───────────┴─────────────────┐
+                       │    │                              │
+                       │  Interactive sessions       Cron sessions
+                       │  (one per chat, persistent) (ephemeral, one per job)
+                       │    │                              │
+                       │  Pi agent (SDK)            Pi agent (SDK)
+                       │    │                              │
+                       │  Custom tools ◄──────────── CronManager
+                       │    │
+                       │  send_message (Telegram or Slack)
+                       │  schedule_task / list / delete / toggle
+                       │
+                    gateway.ts
+              (shared ChatGateway interface)
 ```
 
-When Pi finishes a task it can push interim Telegram messages via the
-`send_telegram_message` tool (e.g., share a PR URL the moment it's created).
-Cron jobs always report results via that tool; the final assistant text is used
-as a fallback if the tool was never called.
+Both gateways implement the same `ChatGateway` interface (`gateway.ts`), so the
+rest of the system is channel-agnostic. Set `CHANNEL_TYPE=telegram` or
+`CHANNEL_TYPE=slack` in `.env` to choose.
+
+When Pi finishes a task it can push interim messages via the `send_message` tool
+(e.g., share a PR URL the moment it's created). Cron jobs always report results
+via that tool; the final assistant text is used as a fallback if the tool was
+never called.
 
 ---
 
@@ -43,17 +53,26 @@ as a fallback if the tool was never called.
 
 ## Setup
 
-### 1 – Create a Telegram bot
+### 1 – Choose your channel
+
+Set `CHANNEL_TYPE` in `.env` to **`telegram`** (default) or **`slack`**.
+Only one channel is active per instance.
+
+---
+
+### Option A – Telegram
+
+#### Create a Telegram bot
 
 1. Open [@BotFather](https://t.me/BotFather) → `/newbot`
 2. Copy the token.
 
-### 2 – Find your chat ID
+#### Find your chat ID
 
 1. Message [@userinfobot](https://t.me/userinfobot)
 2. Copy the number it shows (`Your id is …`).
 
-### 3 – Configure environment
+#### Configure environment
 
 ```bash
 cp .env.example .env
@@ -62,20 +81,67 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
+CHANNEL_TYPE=telegram
 TELEGRAM_BOT_TOKEN=7123456789:AAG…
 TELEGRAM_ALLOWED_CHAT_ID=123456789
 ANTHROPIC_API_KEY=sk-ant-…        # optional if already in auth.json
 DEFAULT_WORK_DIR=/Users/you/projects
 ```
 
-### 4 – Install & run
+---
+
+### Option B – Slack
+
+#### Create a Slack app
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**.
+2. Under **Socket Mode**, enable it and generate an **App-Level Token** with the `connections:write` scope → copy the `xapp-…` token.
+3. Under **OAuth & Permissions**, add these **Bot Token Scopes**:
+   - `app_mentions:read`
+   - `chat:write`
+   - `channels:history`
+   - `im:history`
+   - `im:read`
+   - `im:write`
+4. Under **Event Subscriptions**, enable events and subscribe to:
+   - `app_mention`
+   - `message.im`
+5. Install the app to your workspace and copy the **Bot User OAuth Token** (`xoxb-…`).
+6. Invite the bot to the channel(s) you want it to post in.
+
+#### Find your channel/user IDs
+
+- **Channel ID**: right-click a channel in Slack → *View channel details* → copy the ID at the bottom.
+- **User ID**: click a user's profile → *⋮* → *Copy member ID*.
+
+#### Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```env
+CHANNEL_TYPE=slack
+SLACK_APP_TOKEN=xapp-1-A0…
+SLACK_BOT_TOKEN=xoxb-123…
+SLACK_DEFAULT_CHANNEL=C0123456789
+SLACK_ALLOWED_USERS=U0123456789   # comma-separated; empty = open access
+ANTHROPIC_API_KEY=sk-ant-…        # optional if already in auth.json
+DEFAULT_WORK_DIR=/Users/you/projects
+```
+
+---
+
+### 2 – Install & run
 
 ```bash
 npm install
 npm start
 ```
 
-You'll see `✅ Pi Telegram bridge is running.` and receive a Telegram greeting.
+You'll see `✅ Pi bridge is running.` and receive a greeting in your chosen channel.
 
 ---
 
@@ -83,14 +149,14 @@ You'll see `✅ Pi Telegram bridge is running.` and receive a Telegram greeting.
 
 ### Instant tasks (interactive)
 
-Send any message from Telegram:
+Send any message from Telegram or Slack:
 
 ```
 Go to /Users/me/repos/my-app, create a branch "feat/greeting",
 add a hello-world endpoint in src/api.ts, commit, and open a PR.
 ```
 
-Pi executes all steps and sends you the PR URL via Telegram.
+Pi executes all steps and sends you the PR URL in chat.
 
 ```
 Write a 500-word blog post about WebAssembly and save it to
@@ -124,7 +190,8 @@ Disable the daily blog job
 
 ### Reset conversation
 
-Type `/reset` to start a fresh Pi session (clears context).
+Type `/reset` (Telegram) or `reset` (Slack DM / @mention) to start a fresh Pi
+session (clears context).
 
 ---
 
@@ -196,7 +263,7 @@ launchctl start com.mypi
 ```ini
 # /etc/systemd/system/my-pi.service
 [Unit]
-Description=Pi Telegram Bridge
+Description=Pi Chat Bridge (Telegram / Slack)
 After=network.target
 
 [Service]
@@ -225,12 +292,17 @@ sudo journalctl -fu my-pi
 ```
 my-pi/
 ├── src/
-│   ├── index.ts          # Entry point – wires everything together
-│   ├── config.ts         # Environment variable loading & validation
-│   ├── telegram.ts       # Telegram bot (polling, progress edits, send)
-│   ├── pi-session.ts     # Pi SDK session manager (interactive + cron)
-│   ├── cron-manager.ts   # Cron job CRUD & node-cron scheduling
-│   └── pi-tools.ts       # Custom Pi tools (schedule, telegram, etc.)
+│   ├── db/
+│   │   ├── index.ts          # Barrel export for data layer
+│   │   ├── message-store.ts  # SQLite conversation persistence
+│   │   └── cron-manager.ts   # Cron job CRUD & JSON persistence
+│   ├── index.ts              # Entry point – wires everything together
+│   ├── config.ts             # Environment variable loading & validation
+│   ├── gateway.ts            # ChatGateway interface shared by all channels
+│   ├── telegram.ts           # Telegram bot (polling, progress edits, send)
+│   ├── slack.ts              # Slack bot (Socket Mode, mentions, DMs)
+│   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
+│   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
 ├── .env.example
 ├── package.json
 └── tsconfig.json

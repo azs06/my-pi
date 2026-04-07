@@ -6,9 +6,9 @@
  */
 import { defineTool } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { CronManager } from "./cron-manager.js";
+import type { CronManager } from "./db/index.js";
 
-export type TelegramSender = (message: string) => Promise<void>;
+export type MessageSender = (message: string) => Promise<void>;
 
 // ─── send_telegram_message ───────────────────────────────────────────────────
 
@@ -16,12 +16,12 @@ export type TelegramSender = (message: string) => Promise<void>;
  * Lets Pi proactively push a Telegram message (e.g., to share a PR URL
  * immediately after it's created, before the full reply is sent).
  */
-export function makeSendTelegramTool(send: TelegramSender) {
+export function makeSendMessageTool(send: MessageSender) {
   return defineTool({
-    name: "send_telegram_message",
-    label: "Send Telegram",
+    name: "send_message",
+    label: "Send Message",
     description:
-      "Send a message to the user via Telegram. " +
+      "Send a message to the user via chat (Telegram or Slack, whichever is configured). " +
       "Use this whenever you have an important result to share immediately, " +
       "such as a pull-request URL, a blog post link, or a progress update.",
     parameters: Type.Object({
@@ -32,7 +32,7 @@ export function makeSendTelegramTool(send: TelegramSender) {
     execute: async (_id, params) => {
       await send(params.message);
       return {
-        content: [{ type: "text" as const, text: "✅ Telegram message sent." }],
+        content: [{ type: "text" as const, text: "✅ Message sent." }],
         details: {},
       };
     },
@@ -177,11 +177,11 @@ export function makeToggleCronJobTool(cronManager: CronManager) {
 // ─── Bundle ──────────────────────────────────────────────────────────────────
 
 export function buildCustomTools(
-  send: TelegramSender,
+  send: MessageSender,
   cronManager: CronManager
 ) {
   return [
-    makeSendTelegramTool(send),
+    makeSendMessageTool(send),
     makeScheduleTaskTool(cronManager),
     makeListCronJobsTool(cronManager),
     makeDeleteCronJobTool(cronManager),
