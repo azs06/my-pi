@@ -1,7 +1,9 @@
 # Makefile for my-pi binary builds
 
 BIN      := dist/my-pi
+MENUBAR  := dist/my-pi-menubar
 SRC      := src/index.ts
+SWIFT    := menubar/main.swift
 BUN      := bun
 BUILD    := $(BUN) build $(SRC) --compile --minify
 BUILD_DBG := $(BUN) build $(SRC) --compile --sourcemap=inline
@@ -10,7 +12,19 @@ BUILD_DBG := $(BUN) build $(SRC) --compile --sourcemap=inline
 # (package.json → version, theme/ → TUI themes, export-html/ → HTML export)
 PI_SDK   := node_modules/@mariozechner/pi-coding-agent
 
-.PHONY: build build-debug build-all clean run install copy-assets
+.PHONY: build build-debug build-all menubar clean run run-menubar install copy-assets
+
+## ── Menubar app (macOS only) ───────────────────────────────────────────────
+menubar: dist
+	swiftc -strict-concurrency=minimal \
+	       -o $(MENUBAR) $(SWIFT) \
+	       -framework AppKit
+	@echo "✅  Menubar binary: $(MENUBAR)  ($$(du -sh $(MENUBAR) | cut -f1))"
+
+## Run the menubar app (builds my-pi + menubar first if missing)
+run-menubar: build menubar
+	open -a Terminal $(MENUBAR) || $(MENUBAR) &
+	@echo "✅  Menubar launched."
 
 ## ── Default: minified release build for the current machine ────────────────
 build: dist copy-assets

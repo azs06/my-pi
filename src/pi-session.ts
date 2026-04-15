@@ -36,7 +36,9 @@ You are a personal AI assistant reachable via ${
     ? "Slack"
     : config.channelType === "discord"
       ? "Discord"
-      : "Telegram"
+      : config.channelType === "headless"
+        ? "the command line"
+        : "Telegram"
 }.
 You have access to bash, file-system tools, and these custom tools:
 
@@ -71,7 +73,9 @@ Guidelines:
   - Be concise but complete in prose responses.
 ${config.channelType === "slack"
   ? "  - Use Slack mrkdwn formatting: *bold*, _italic_, \`code\`, ```code blocks```, <url|text> for links.\n  - Do NOT use **double asterisks** or [markdown](links)."
-  : "  - Use Markdown in messages for readability."}
+  : config.channelType === "headless"
+    ? "  - Use plain text or standard Markdown in responses."
+    : "  - Use Markdown in messages for readability."}
 `;
 
 function makeCronSystemPrompt(job: CronJob): string {

@@ -2,8 +2,8 @@
  * index.ts – Entry point.
  *
  * Wires together:
- *   ChatGateway (Telegram | Slack) → PiSessionManager
- *   CronManager                    → PiSessionManager
+ *   ChatGateway (Telegram | Slack | Discord | Headless) → PiSessionManager
+ *   CronManager                                         → PiSessionManager
  *
  * The CHANNEL_TYPE env var selects which gateway to start.
  */
@@ -54,15 +54,15 @@ async function main(): Promise<void> {
     await gateway.sendTo(chatId, text);
   };
   const sendFile = async (filePath: string, caption?: string): Promise<void> => {
-    await gateway.sendFileTo(
+    const chatId =
       config.channelType === "telegram"
         ? config.telegram!.allowedChatId
         : config.channelType === "discord"
           ? config.discord!.defaultChannel
-          : config.slack!.defaultChannel,
-      filePath,
-      caption
-    );
+          : config.channelType === "slack"
+            ? config.slack!.defaultChannel
+            : "headless"; // headless: prints to stdout
+    await gateway.sendFileTo(chatId, filePath, caption);
   };
   const sendFileTo = async (chatId: string, filePath: string, caption?: string): Promise<void> => {
     await gateway.sendFileTo(chatId, filePath, caption);
@@ -71,7 +71,7 @@ async function main(): Promise<void> {
   // ── Pi session manager ──────────────────────────────────────────────────────
   piSessions = new PiSessionManager(send, sendTo, sendFile, sendFileTo, cronManager, reminderManager, noteStore, messageStore);
 
-  // ── Message handler (shared by both gateways) ──────────────────────────────
+  // ── Message handler (shared by all gateways) ───────────────────────────────
   const onMessage: GatewayMessageHandler = (
     text: string,
     chatId: string,
@@ -98,8 +98,35 @@ async function main(): Promise<void> {
     );
   };
 
+  // ── Graceful shutdown (hoisted so headless can call it after start()) ───────
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
+    piSessions.shutdown();
+    cronManager.shutdown();
+    reminderManager.shutdown();
+    noteStore.close();
+    messageStore.close();
+    await gateway.stop();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
   // ── Start the selected gateway ────────────────────────────────────────────
-  if (config.channelType === "telegram") {
+  if (config.channelType === "headless") {
+    const { HeadlessGateway } = await import("./headless.js");
+    const hg = new HeadlessGateway(onMessage);
+    gateway = hg;
+    // Load cron + reminders before starting so tools work in one-shot mode
+    await cronManager.load();
+    await reminderManager.load();
+    console.error(`[Headless] Pi is ready. Working dir: ${config.defaultWorkDir}`);
+    await hg.start();
+    // After start() returns (one-shot or REPL exited), shut down cleanly
+    await shutdown("headless-exit");
+    return;
+  } else if (config.channelType === "telegram") {
     const { TelegramGateway } = await import("./telegram.js");
     const tg = config.telegram!;
     gateway = new TelegramGateway(tg.token, tg.allowedChatId, onMessage);
@@ -135,32 +162,17 @@ async function main(): Promise<void> {
   // ── Startup notification ─────────────────────────────────────────────────────
   try {
     await send(
-    config.channelType === "slack"
+      config.channelType === "slack"
         ? `*Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}_`
         : config.channelType === "discord"
-        ? `**Pi assistant is online!**\nWorking dir: \`${config.defaultWorkDir}\`\nCron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}`
-        : `🤖 *Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}_`
+          ? `**Pi assistant is online!**\nWorking dir: \`${config.defaultWorkDir}\`\nCron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}`
+          : `🤖 *Pi assistant is online!*\n_Working dir: \`${config.defaultWorkDir}\`_\n_Cron: ${cronManager.listJobs().length} jobs | Reminders: ${reminderManager.listReminders().length} | Notes: ${noteStore.count()}_`
     );
   } catch (err) {
     console.warn("[Startup] Could not send startup message:", err);
   }
 
   console.log(`✅ Pi ${config.channelType} bridge is running. Ctrl+C to stop.`);
-
-  // ── Graceful shutdown ─────────────────────────────────────────────────────────
-  const shutdown = async (signal: string): Promise<void> => {
-    console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
-    piSessions.shutdown();
-    cronManager.shutdown();
-    reminderManager.shutdown();
-    noteStore.close();
-    messageStore.close();
-    await gateway.stop();
-    process.exit(0);
-  };
-
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {

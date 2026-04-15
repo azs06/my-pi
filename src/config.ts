@@ -10,7 +10,7 @@ dotenvLoad();
 
 // ─── Channel types ───────────────────────────────────────────────────────────
 
-export type ChannelType = "telegram" | "slack" | "discord";
+export type ChannelType = "telegram" | "slack" | "discord" | "headless";
 
 export interface TelegramConfig {
   token: string;
@@ -70,8 +70,8 @@ function optionalEnv(envVar: string): string | undefined {
 // ─── Build ──────────────────────────────────────────────────────────────────
 
 const channelType = (process.env.CHANNEL_TYPE ?? "telegram").toLowerCase() as ChannelType;
-if (channelType !== "telegram" && channelType !== "slack" && channelType !== "discord") {
-  throw new Error(`CHANNEL_TYPE must be "telegram", "slack", or "discord", got "${channelType}"`);
+if (channelType !== "telegram" && channelType !== "slack" && channelType !== "discord" && channelType !== "headless") {
+  throw new Error(`CHANNEL_TYPE must be "telegram", "slack", "discord", or "headless", got "${channelType}"`);
 }
 
 // Validate channel-specific env vars
@@ -79,7 +79,9 @@ let telegram: TelegramConfig | undefined;
 let slack: SlackConfig | undefined;
 let discord: DiscordConfig | undefined;
 
-if (channelType === "telegram") {
+if (channelType === "headless") {
+  // No tokens required for headless mode
+} else if (channelType === "telegram") {
   telegram = {
     token: requireEnv("TELEGRAM_BOT_TOKEN"),
     allowedChatId: requireEnv("TELEGRAM_ALLOWED_CHAT_ID"),

@@ -32,7 +32,7 @@ your workflow.
 
 All three gateways implement the same `ChatGateway` interface (`gateway.ts`), so the
 rest of the system is channel-agnostic. Set `CHANNEL_TYPE=telegram`, `CHANNEL_TYPE=slack`,
-or `CHANNEL_TYPE=discord` in `.env` to choose.
+`CHANNEL_TYPE=discord`, or `CHANNEL_TYPE=headless` in `.env` to choose.
 
 When Pi finishes a task it can push interim messages via the `send_message` tool
 (e.g., share a PR URL the moment it's created). Cron jobs always report results
@@ -56,8 +56,42 @@ never called.
 
 ### 1 – Choose your channel
 
-Set `CHANNEL_TYPE` in `.env` to **`telegram`** (default), **`slack`**, or **`discord`**.
+Set `CHANNEL_TYPE` in `.env` to **`telegram`** (default), **`slack`**, **`discord`**, or **`headless`**.
 Only one channel is active per instance.
+
+---
+
+### Option D – Headless (CLI / scripted)
+
+No bot tokens needed. Pi reads from stdin and writes to stdout — perfect for
+scripts, CI pipelines, or quick one-off tasks from the terminal.
+
+```bash
+# One-shot via env var
+CHANNEL_TYPE=headless HEADLESS_PROMPT="List all cron jobs" npm start
+
+# One-shot via pipe
+echo "Summarise ~/notes/todo.md" | CHANNEL_TYPE=headless npm start
+
+# Interactive REPL (when stdin is a tty)
+CHANNEL_TYPE=headless npm start
+```
+
+Progress / tool-use lines are written to **stderr**; the final answer goes to **stdout**,
+so you can capture it cleanly:
+
+```bash
+result=$(echo "What time is it?" | CHANNEL_TYPE=headless npm start 2>/dev/null)
+echo "Pi says: $result"
+```
+
+#### Headless env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `HEADLESS_CHAT_ID` | `headless` | Session key used in the message store |
+| `HEADLESS_PROMPT` | — | Run a single prompt then exit |
+| `HEADLESS_QUIET` | — | Set to `1` to suppress stderr progress output |
 
 ---
 
@@ -348,6 +382,7 @@ my-pi/
 │   ├── telegram.ts           # Telegram bot (polling, progress edits, send)
 │   ├── slack.ts              # Slack bot (Socket Mode, mentions, DMs)
 │   ├── discord.ts            # Discord bot (discord.js v14, mentions, DMs)
+│   ├── headless.ts           # Headless gateway (stdin → stdout, one-shot or REPL)
 │   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
 │   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
 ├── .env.example
