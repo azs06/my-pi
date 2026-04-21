@@ -51,6 +51,9 @@ export class MessageStore {
    * (handles compaction, message edits, etc.)
    */
   saveMessages(chatId: string, messages: unknown[]): void {
+    const persistedMessages = messages.filter(
+      (message) => !isSyntheticRestoreMessage(message)
+    );
     const del = this.db.prepare("DELETE FROM messages WHERE chat_id = ?");
     const ins = this.db.prepare(
       "INSERT INTO messages (chat_id, seq, role, data, timestamp) VALUES (?, ?, ?, ?, ?)"
@@ -63,8 +66,8 @@ export class MessageStore {
 
     const run = this.db.transaction(() => {
       del.run(chatId);
-      for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i] as Record<string, unknown>;
+      for (let i = 0; i < persistedMessages.length; i++) {
+        const msg = persistedMessages[i] as Record<string, unknown>;
         ins.run(
           chatId,
           i,
@@ -74,7 +77,7 @@ export class MessageStore {
         );
       }
       const now = Date.now();
-      meta.run(chatId, messages.length, now, messages.length, now);
+      meta.run(chatId, persistedMessages.length, now, persistedMessages.length, now);
     });
     run();
   }
@@ -112,7 +115,9 @@ export class MessageStore {
     chatId: string,
     recentTurns: number
   ): { messages: unknown[]; contextSummary: string | null } {
-    const all = this.loadAll(chatId);
+    const all = this.loadAll(chatId).filter(
+      (message) => !isSyntheticRestoreMessage(message)
+    );
     if (all.length === 0) return { messages: [], contextSummary: null };
 
     const cutoff = findTurnBoundary(all, recentTurns);
@@ -141,6 +146,9 @@ export class MessageStore {
   }
 }
 
+const RESTORED_CONTEXT_MARKER = "[Conversation context restored from history]";
+const RESTORED_CONTEXT_MODEL = "context-restore";
+
 // ─── Turn boundary helper ────────────────────────────────────────────────────
 
 /**
@@ -152,6 +160,7 @@ function findTurnBoundary(messages: unknown[], recentTurns: number): number {
   let turnsSeen = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as Record<string, unknown>;
+    if (isSyntheticRestoreMessage(msg)) continue;
     if (msg.role === "user") {
       turnsSeen++;
       if (turnsSeen >= recentTurns) return i;
@@ -171,6 +180,8 @@ function buildContextSummary(messages: unknown[]): string {
 
   for (const raw of messages) {
     const msg = raw as Record<string, unknown>;
+    if (isSyntheticRestoreMessage(msg)) continue;
+
     const role = msg.role as string;
 
     if (role === "user") {
@@ -208,4 +219,18 @@ function extractText(msg: Record<string, unknown>): string | null {
   }
 
   return null;
+}
+
+function isSyntheticRestoreMessage(raw: unknown): boolean {
+  const msg = raw as Record<string, unknown>;
+
+  if (msg.role === "user") {
+    return extractText(msg) === RESTORED_CONTEXT_MARKER;
+  }
+
+  if (msg.role === "assistant") {
+    return msg.model === RESTORED_CONTEXT_MODEL;
+  }
+
+  return false;
 }

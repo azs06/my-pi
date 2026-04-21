@@ -11,6 +11,7 @@
  */
 
 import AppKit
+import Darwin
 import Foundation
 
 // ─── Menubar controller ───────────────────────────────────────────────────────
@@ -83,11 +84,16 @@ final class PiMenuBar: NSObject, NSApplicationDelegate {
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
             let data = fh.availableData
-            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            guard !data.isEmpty else {
+                fh.readabilityHandler = nil
+                return
+            }
+            guard let str = String(data: data, encoding: .utf8) else { return }
             DispatchQueue.main.async { self?.appendLog(str) }
         }
 
-        p.terminationHandler = { [weak self] proc in
+        p.terminationHandler = { [weak self, weak pipe] proc in
+            pipe?.fileHandleForReading.readabilityHandler = nil
             DispatchQueue.main.async {
                 self?.appendLog("[menubar] Process exited (code \(proc.terminationStatus)).")
                 self?.piProcess = nil
@@ -112,15 +118,117 @@ final class PiMenuBar: NSObject, NSApplicationDelegate {
             piProcess = nil
             return
         }
-        p.terminate()
-        // Give it a moment to exit gracefully, then SIGKILL
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak p] in
-            if p?.isRunning == true { p?.interrupt() }
+
+        let pid = p.processIdentifier
+        let descendants = descendantPIDs(of: pid)
+        appendLog(
+            descendants.isEmpty
+                ? "[menubar] Sending SIGTERM to PID \(pid)."
+                : "[menubar] Sending SIGTERM to PID \(pid) and \(descendants.count) child process(es)."
+        )
+        signalProcessTree(rootPID: pid, descendants: descendants, signal: SIGTERM)
+
+        let deadline = Date().addingTimeInterval(3.0)
+        while p.isRunning && Date() < deadline {
+            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
-        appendLog("[menubar] Sent SIGTERM to PID \(p.processIdentifier).")
+
+        if p.isRunning {
+            let remaining = Array(Set(descendants + descendantPIDs(of: pid))).sorted()
+            appendLog(
+                remaining.isEmpty
+                    ? "[menubar] PID \(pid) didn't exit in time – sending SIGKILL."
+                    : "[menubar] PID \(pid) and \(remaining.count) child process(es) didn't exit in time – sending SIGKILL."
+            )
+            signalProcessTree(rootPID: pid, descendants: remaining, signal: SIGKILL)
+            p.waitUntilExit()
+        }
+
         piProcess = nil
         setIcon(running: false)
         rebuildMenu()
+    }
+
+    private func signalProcessTree(rootPID: Int32, descendants: [Int32], signal: Int32) {
+        for childPID in descendants.reversed() {
+            sendSignal(signal, to: childPID)
+        }
+        sendSignal(signal, to: rootPID)
+    }
+
+    private func sendSignal(_ signal: Int32, to pid: Int32) {
+        if kill(pid, signal) == 0 { return }
+
+        let err = errno
+        guard err != ESRCH else { return }
+        appendLog(
+            "[menubar] Failed to send \(signalName(signal)) to PID \(pid): \(String(cString: strerror(err)))"
+        )
+    }
+
+    private func signalName(_ signal: Int32) -> String {
+        switch signal {
+        case SIGTERM:
+            return "SIGTERM"
+        case SIGKILL:
+            return "SIGKILL"
+        default:
+            return "signal \(signal)"
+        }
+    }
+
+    private func descendantPIDs(of pid: Int32) -> [Int32] {
+        var seen = Set<Int32>()
+        var ordered: [Int32] = []
+        var stack = childPIDs(of: pid)
+
+        while let current = stack.popLast() {
+            guard seen.insert(current).inserted else { continue }
+            ordered.append(current)
+            stack.append(contentsOf: childPIDs(of: current))
+        }
+
+        return ordered
+    }
+
+    private func childPIDs(of pid: Int32) -> [Int32] {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        task.arguments = ["-P", String(pid)]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        task.standardOutput = stdout
+        task.standardError = stderr
+
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            appendLog("[menubar] Failed to inspect child processes for PID \(pid): \(error.localizedDescription)")
+            return []
+        }
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+        if task.terminationStatus != 0 {
+            if task.terminationStatus == 1 { return [] } // no children
+
+            let errorText = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let errorText, !errorText.isEmpty {
+                appendLog("[menubar] pgrep failed for PID \(pid): \(errorText)")
+            } else {
+                appendLog("[menubar] pgrep failed for PID \(pid) with exit code \(task.terminationStatus).")
+            }
+            return []
+        }
+
+        guard let output = String(data: outputData, encoding: .utf8) else { return [] }
+        return output
+            .split(whereSeparator: { $0.isNewline })
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     }
 
     @objc func restartPi() {

@@ -37,7 +37,9 @@ rest of the system is channel-agnostic. Set `CHANNEL_TYPE=telegram`, `CHANNEL_TY
 When Pi finishes a task it can push interim messages via the `send_message` tool
 (e.g., share a PR URL the moment it's created). Cron jobs always report results
 via that tool; the final assistant text is used as a fallback if the tool was
-never called.
+never called. Scheduled jobs also do **not** overlap with themselves: if a job
+is still running when the next tick arrives, that tick is marked as skipped
+instead of starting a second concurrent run.
 
 ---
 
@@ -254,6 +256,10 @@ Pi converts this to a cron expression, registers the job, and replies with the
 job ID. At 9 AM on weekdays it spins up a fresh Pi session, executes the task,
 and sends you the PR URL.
 
+If a scheduled run is still in progress when the next scheduled time arrives,
+that overlapping run is skipped on purpose. This avoids duplicate PRs, repeated
+git operations, and two copies of the same automation mutating the same repo.
+
 ### Managing jobs
 
 ```
@@ -268,10 +274,13 @@ Delete cron job <id>
 Disable the daily blog job
 ```
 
+When listing jobs, a `⏭️ skipped` status means Pi intentionally skipped an
+overlapping run because the previous execution was still in progress.
+
 ### Reset conversation
 
-Type `/reset` (Telegram / Discord) or `reset` (Slack DM / @mention) to start a fresh Pi
-session (clears context).
+Type `/reset` in Telegram, Discord, or Slack to start a fresh Pi session
+(clears context).
 
 ---
 
@@ -292,6 +301,29 @@ When Pi registers a job it stores something like:
 ```
 
 Jobs are persisted in `~/.my-pi/cron-jobs.json` and survive restarts.
+
+---
+
+## macOS menubar app
+
+On macOS you can run `my-pi` through the native menubar wrapper in
+`menubar/main.swift`.
+
+```bash
+make build menubar
+make run-menubar
+```
+
+The menubar app can start, stop, and restart the compiled binary, show recent
+logs, and open the full log file. Choosing **Stop** or **Quit MyPi** now stops
+`my-pi` and its child processes before the menubar app exits, so closing it
+won't leave the background agent running.
+
+Menubar log file:
+
+```text
+~/.my-pi/menubar.log
+```
 
 ---
 
@@ -385,6 +417,9 @@ my-pi/
 │   ├── headless.ts           # Headless gateway (stdin → stdout, one-shot or REPL)
 │   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
 │   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
+├── menubar/
+│   └── main.swift            # macOS menubar wrapper for starting/stopping my-pi
+├── Makefile                  # build helpers for the binary + menubar app
 ├── .env.example
 ├── package.json
 └── tsconfig.json

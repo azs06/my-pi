@@ -21,9 +21,10 @@ async function main(): Promise<void> {
   // ── Message store (SQLite) ──────────────────────────────────────────────────
   const messageStore = new MessageStore(config.sqliteDbPath);
 
-  // ── Forward-declared so the `send` closure can capture it ──────────────────
-  let gateway: ChatGateway;
+  // ── Forward-declared so closures and shutdown can capture them safely ──────
+  let gateway: ChatGateway | null = null;
   let piSessions: PiSessionManager;
+  let shuttingDown: Promise<void> | null = null;
 
   // ── Cron manager ─────────────────────────────────────────────────────────────
   const cronManager = new CronManager(
@@ -42,16 +43,27 @@ async function main(): Promise<void> {
     config.remindersFile,
     async (reminder) => {
       const msg = `⏰ *Reminder*\n${reminder.message}`;
-      await gateway.sendTo(reminder.chatId, msg);
+      const activeGateway = gateway;
+      if (!activeGateway) {
+        throw new Error("Gateway not ready yet");
+      }
+      await activeGateway.sendTo(reminder.chatId, msg);
     }
   );
 
   // ── The send function: outbound messages through whatever gateway is active ─
+  const requireGateway = (): ChatGateway => {
+    if (!gateway) {
+      throw new Error("Gateway not ready yet");
+    }
+    return gateway;
+  };
+
   const send = async (text: string): Promise<void> => {
-    await gateway.send(text);
+    await requireGateway().send(text);
   };
   const sendTo = async (chatId: string, text: string): Promise<void> => {
-    await gateway.sendTo(chatId, text);
+    await requireGateway().sendTo(chatId, text);
   };
   const sendFile = async (filePath: string, caption?: string): Promise<void> => {
     const chatId =
@@ -62,10 +74,10 @@ async function main(): Promise<void> {
           : config.channelType === "slack"
             ? config.slack!.defaultChannel
             : "headless"; // headless: prints to stdout
-    await gateway.sendFileTo(chatId, filePath, caption);
+    await requireGateway().sendFileTo(chatId, filePath, caption);
   };
   const sendFileTo = async (chatId: string, filePath: string, caption?: string): Promise<void> => {
-    await gateway.sendFileTo(chatId, filePath, caption);
+    await requireGateway().sendFileTo(chatId, filePath, caption);
   };
 
   // ── Pi session manager ──────────────────────────────────────────────────────
@@ -100,18 +112,62 @@ async function main(): Promise<void> {
 
   // ── Graceful shutdown (hoisted so headless can call it after start()) ───────
   const shutdown = async (signal: string): Promise<void> => {
-    console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
-    piSessions.shutdown();
-    cronManager.shutdown();
-    reminderManager.shutdown();
-    noteStore.close();
-    messageStore.close();
-    await gateway.stop();
-    process.exit(0);
+    if (shuttingDown) {
+      await shuttingDown;
+      return;
+    }
+
+    shuttingDown = (async () => {
+      console.log(`\n[Shutdown] Received ${signal}. Stopping…`);
+
+      try {
+        piSessions.shutdown();
+      } catch (err) {
+        console.error("[Shutdown] Failed to dispose sessions:", err);
+      }
+
+      try {
+        cronManager.shutdown();
+      } catch (err) {
+        console.error("[Shutdown] Failed to stop cron manager:", err);
+      }
+
+      try {
+        reminderManager.shutdown();
+      } catch (err) {
+        console.error("[Shutdown] Failed to stop reminder manager:", err);
+      }
+
+      try {
+        if (gateway) {
+          await gateway.stop();
+        }
+      } catch (err) {
+        console.error("[Shutdown] Failed to stop gateway:", err);
+      }
+
+      try {
+        noteStore.close();
+      } catch (err) {
+        console.error("[Shutdown] Failed to close note store:", err);
+      }
+
+      try {
+        messageStore.close();
+      } catch (err) {
+        console.error("[Shutdown] Failed to close message store:", err);
+      }
+    })();
+
+    try {
+      await shuttingDown;
+    } finally {
+      process.exit(0);
+    }
   };
 
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
   // ── Start the selected gateway ────────────────────────────────────────────
   if (config.channelType === "headless") {
@@ -139,8 +195,8 @@ async function main(): Promise<void> {
       dc.allowedUsers,
       onMessage
     );
-    await discordGw.start();
     gateway = discordGw;
+    await discordGw.start();
   } else {
     const { SlackGateway } = await import("./slack.js");
     const sl = config.slack!;
@@ -151,8 +207,8 @@ async function main(): Promise<void> {
       sl.allowedUsers,
       onMessage
     );
-    await slackGw.start();
     gateway = slackGw;
+    await slackGw.start();
   }
 
   // ── Load saved cron jobs + reminders (starts scheduling) ────────────────────

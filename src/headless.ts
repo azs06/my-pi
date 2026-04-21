@@ -29,7 +29,7 @@ const QUIET = process.env.HEADLESS_QUIET === "1";
 const ONE_SHOT_PROMPT = process.env.HEADLESS_PROMPT?.trim();
 
 export class HeadlessGateway implements ChatGateway {
-  private readonly rl: readline.Interface | null = null;
+  private rl: readline.Interface | null = null;
   private stopped = false;
 
   constructor(private readonly onMessage: GatewayMessageHandler) {}
@@ -79,7 +79,7 @@ export class HeadlessGateway implements ChatGateway {
     });
 
     // Make rl accessible to stop()
-    (this as { rl: readline.Interface | null }).rl = rl;
+    this.rl = rl;
 
     console.error("[Headless] Interactive mode. Empty line or Ctrl+C to quit.");
 

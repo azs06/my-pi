@@ -14,6 +14,7 @@ process.env.SQLITE_DB_PATH = join(tmpdir(), "my-pi-test-messages.db");
 const { PiSessionManager } = await import("../src/pi-session.js");
 const { CronManager } = await import("../src/db/cron-manager.js");
 const { ReminderManager } = await import("../src/db/reminder-manager.js");
+const { MessageStore } = await import("../src/db/message-store.js");
 const { DiscordGateway } = await import("../src/discord.js");
 const { SlackGateway } = await import("../src/slack.js");
 const { TelegramGateway } = await import("../src/telegram.js");
@@ -253,4 +254,132 @@ test("TelegramGateway.sendTo falls back to plain text when Markdown delivery fai
     { text: "*bold*", options: { parse_mode: "Markdown" } },
     { text: "*bold*", options: undefined },
   ]);
+});
+
+test("TelegramGateway.sendFileTo falls back to plain captions when Markdown captions fail", async () => {
+  const calls: Array<{ filePath: string; options?: { caption?: string; parse_mode?: string } }> = [];
+  const fakeBot = {
+    async sendDocument(
+      _chatId: string,
+      filePath: string,
+      options?: { caption?: string; parse_mode?: string }
+    ) {
+      calls.push({ filePath, options });
+      if (options?.parse_mode === "Markdown") {
+        throw new Error("Bad Request: can't parse entities");
+      }
+    },
+  };
+
+  await (TelegramGateway.prototype.sendFileTo as any).call(
+    { bot: fakeBot },
+    "chat-1",
+    "/tmp/demo.txt",
+    "*bold*"
+  );
+
+  assert.deepEqual(calls, [
+    { filePath: "/tmp/demo.txt", options: { caption: "*bold*", parse_mode: "Markdown" } },
+    { filePath: "/tmp/demo.txt", options: { caption: "*bold*" } },
+  ]);
+});
+
+test("CronManager skips overlapping runs of the same job", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-cron-overlap-"));
+  const jobsFile = join(dir, "cron-jobs.json");
+
+  let runs = 0;
+  let releaseRun: (() => void) | undefined;
+  let markFirstStarted: (() => void) | undefined;
+
+  const firstStarted = new Promise<void>((resolve) => {
+    markFirstStarted = resolve;
+  });
+  const runBlocked = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+
+  const cron = new CronManager(jobsFile, async () => {
+    runs++;
+    markFirstStarted?.();
+    await runBlocked;
+  });
+  await cron.load();
+
+  const job = await cron.addJob({
+    name: "Overlap test",
+    schedule: "* * * * *",
+    task: "Do work",
+    workDir: process.cwd(),
+    enabled: false,
+  });
+  const storedJob = cron.getJob(job.id);
+  assert.ok(storedJob);
+  storedJob.enabled = true;
+
+  const firstRun = (cron as any).runJob(job.id) as Promise<void>;
+  await firstStarted;
+
+  await (cron as any).runJob(job.id);
+  assert.equal(runs, 1);
+  assert.equal(cron.getJob(job.id)?.lastStatus, "skipped");
+  assert.match(cron.getJob(job.id)?.lastError ?? "", /still in progress/i);
+
+  releaseRun?.();
+  await firstRun;
+
+  assert.equal(runs, 1);
+  assert.equal(cron.getJob(job.id)?.lastStatus, "success");
+  cron.shutdown();
+});
+
+test("MessageStore does not persist synthetic restore-summary messages", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-message-store-"));
+  const dbPath = join(dir, "messages.db");
+  const store = new MessageStore(dbPath);
+
+  try {
+    store.saveMessages("chat-1", [
+      {
+        role: "user",
+        content: [{ type: "text", text: "[Conversation context restored from history]" }],
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Earlier summary" }],
+        model: "context-restore",
+        timestamp: 2,
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "Real question" }],
+        timestamp: 3,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Real answer" }],
+        model: "real-model",
+        timestamp: 4,
+      },
+    ]);
+
+    const stored = store.loadAll("chat-1") as Array<{ role: string; content: Array<{ text: string }> }>;
+    assert.deepEqual(
+      stored.map((message) => message.role),
+      ["user", "assistant"]
+    );
+    assert.equal(stored[0]?.content[0]?.text, "Real question");
+    assert.equal(stored[1]?.content[0]?.text, "Real answer");
+
+    const restore = store.getRestoreContext("chat-1", 1);
+    const restored = restore.messages as Array<{ role: string; content: Array<{ text: string }> }>;
+    assert.equal(restore.contextSummary, null);
+    assert.deepEqual(
+      restored.map((message) => message.role),
+      ["user", "assistant"]
+    );
+  } finally {
+    store.close();
+  }
 });

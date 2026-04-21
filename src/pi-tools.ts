@@ -169,7 +169,13 @@ export function makeListCronJobsTool(cronManager: CronManager) {
                   `  Schedule: \`${j.schedule}\`\n` +
                   `  Status: ${j.enabled ? "✅ enabled" : "⏸️ disabled"}\n` +
                   `  Last run: ${j.lastRun ? new Date(j.lastRun).toLocaleString() : "never"} ` +
-                  `${j.lastStatus === "error" ? `❌ (${j.lastError})` : j.lastStatus === "success" ? "✅" : ""}\n` +
+                  `${j.lastStatus === "error"
+                    ? `❌ (${j.lastError})`
+                    : j.lastStatus === "success"
+                      ? "✅"
+                      : j.lastStatus === "skipped"
+                        ? `⏭️ (${j.lastError ?? "skipped"})`
+                        : ""}\n` +
                   `  Task: ${j.task.slice(0, 80)}${j.task.length > 80 ? "…" : ""}`
               )
               .join("\n\n");

@@ -25,7 +25,7 @@ export interface CronJob {
   enabled: boolean;
   createdAt: string;
   lastRun?: string;
-  lastStatus?: "success" | "error";
+  lastStatus?: "success" | "error" | "skipped";
   lastError?: string;
 }
 
@@ -36,6 +36,7 @@ export type TaskRunner = (job: CronJob) => Promise<void>;
 export class CronManager {
   private jobs = new Map<string, CronJob>();
   private tasks = new Map<string, cron.ScheduledTask>();
+  private runningJobs = new Set<string>();
 
   constructor(
     private readonly jobsFile: string,
@@ -80,6 +81,7 @@ export class CronManager {
   shutdown(): void {
     for (const task of this.tasks.values()) task.stop();
     this.tasks.clear();
+    this.runningJobs.clear();
     console.log("[CronManager] All scheduled tasks stopped.");
   }
 
@@ -135,32 +137,48 @@ export class CronManager {
   private register(job: CronJob): void {
     this.unregister(job.id); // stop any previous schedule
 
-    const task = cron.schedule(job.schedule, async () => {
-      const stored = this.jobs.get(job.id);
-      if (!stored?.enabled) return;
-
-      const startTime = new Date().toISOString();
-      stored.lastRun = startTime;
-      console.log(`[CronManager] Firing job "${stored.name}" (${stored.id})`);
-
-      try {
-        await this.taskRunner(stored);
-        stored.lastStatus = "success";
-        delete stored.lastError;
-      } catch (err) {
-        stored.lastStatus = "error";
-        stored.lastError =
-          err instanceof Error ? err.message : String(err);
-        console.error(
-          `[CronManager] Job "${stored.name}" failed:`,
-          stored.lastError
-        );
-      }
-
-      await this.persist();
+    const task = cron.schedule(job.schedule, () => {
+      void this.runJob(job.id).catch((err) => {
+        console.error(`[CronManager] Unexpected failure while running job ${job.id}:`, err);
+      });
     });
 
     this.tasks.set(job.id, task);
+  }
+
+  private async runJob(jobId: string): Promise<void> {
+    const stored = this.jobs.get(jobId);
+    if (!stored?.enabled) return;
+
+    if (this.runningJobs.has(jobId)) {
+      stored.lastStatus = "skipped";
+      stored.lastError = "Skipped because the previous run is still in progress.";
+      console.warn(
+        `[CronManager] Skipping overlapping run for job "${stored.name}" (${stored.id})`
+      );
+      await this.persist();
+      return;
+    }
+
+    this.runningJobs.add(jobId);
+    stored.lastRun = new Date().toISOString();
+    console.log(`[CronManager] Firing job "${stored.name}" (${stored.id})`);
+
+    try {
+      await this.taskRunner(stored);
+      stored.lastStatus = "success";
+      delete stored.lastError;
+    } catch (err) {
+      stored.lastStatus = "error";
+      stored.lastError = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[CronManager] Job "${stored.name}" failed:`,
+        stored.lastError
+      );
+    } finally {
+      this.runningJobs.delete(jobId);
+      await this.persist();
+    }
   }
 
   private unregister(jobId: string): void {
