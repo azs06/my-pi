@@ -304,70 +304,90 @@ Jobs are persisted in `~/.my-pi/cron-jobs.json` and survive restarts.
 
 ---
 
-## macOS menubar app
+## macOS app
 
-On macOS you can run `my-pi` through the native menubar wrapper in
-`menubar/main.swift`.
+On macOS you can package the native menubar controller as a normal app bundle
+and launch it from Finder or Terminal:
 
 ```bash
-make build menubar
+make app
+open dist/MyPi.app
+```
+
+For GitHub Releases there is also a universal bundle target:
+
+```bash
+make app-universal
+```
+
+There is also a convenience target:
+
+```bash
+make run-app
+```
+
+If you prefer the raw menubar binary during development:
+
+```bash
 make run-menubar
 ```
 
-The menubar app can start, stop, and restart the compiled binary, show recent
-logs, and open the full log file. Choosing **Stop** or **Quit MyPi** now stops
-`my-pi` and its child processes before the menubar app exits, so closing it
-won't leave the background agent running.
+The menubar app controls a user `launchd` service for `my-pi`, so opening it
+starts the service, **Stop** / **Restart** manage that same service, and
+**Quit MyPi** shuts the service down before the app exits.
 
-Menubar log file:
+`make app` now produces a self-contained `MyPi.app`. In the bundled app mode,
+configuration is read from `~/.my-pi/.env`. On first launch the app also writes
+an example config to `~/.my-pi/.env.example`.
+
+Log files:
 
 ```text
-~/.my-pi/menubar.log
+~/.my-pi/service.log   # my-pi stdout/stderr
+~/.my-pi/menubar.log   # menubar controller actions
 ```
 
 ---
 
 ## Run as a system service (macOS)
 
-Create `~/Library/LaunchAgents/com.mypi.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.mypi</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/path/to/node</string>
-    <string>--import</string>
-    <string>tsx/esm</string>
-    <string>/Users/you/code/my-pi/src/index.ts</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>/Users/you/code/my-pi</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/tmp/my-pi.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/my-pi.err</string>
-</dict>
-</plist>
-```
+Use the helper script:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.mypi.plist
-launchctl start com.mypi
+./scripts/my-pi-service.sh start
+./scripts/my-pi-service.sh stop
+./scripts/my-pi-service.sh restart
+./scripts/my-pi-service.sh status
+./scripts/my-pi-service.sh logs
+```
+
+The script writes `~/Library/LaunchAgents/com.mypi.plist` automatically and
+manages the same `launchd` service used by the macOS app. If `dist/my-pi` is
+missing, the script builds it first.
+
+---
+
+## GitHub Releases (macOS app)
+
+This repo includes two GitHub Actions workflows:
+
+- `.github/workflows/draft-release.yml` – manually create/update a **draft**
+  GitHub Release from the Actions tab.
+- `.github/workflows/release-app.yml` – when that release is **published**,
+  build an **unsigned** universal `MyPi.app`, zip it, and attach it to the
+  release.
+
+The release build uses `make app-universal`, so the uploaded app bundle contains
+both Apple Silicon and Intel binaries.
+
+Because this is an unsigned personal-use build, macOS may warn on first launch
+after downloading from GitHub. If that happens, either:
+
+- right-click `MyPi.app` → **Open**, or
+- remove quarantine manually:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/MyPi.app
 ```
 
 ### Linux (systemd)
@@ -418,8 +438,14 @@ my-pi/
 │   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
 │   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
 ├── menubar/
-│   └── main.swift            # macOS menubar wrapper for starting/stopping my-pi
-├── Makefile                  # build helpers for the binary + menubar app
+│   ├── main.swift            # macOS menubar wrapper for starting/stopping my-pi
+│   └── Info.plist            # App bundle metadata for MyPi.app
+├── scripts/
+│   └── my-pi-service.sh      # start/stop/status helper for macOS launchd
+├── .github/workflows/
+│   ├── draft-release.yml     # manual draft GitHub Release creation
+│   └── release-app.yml       # build/upload MyPi.app when a release is published
+├── Makefile                  # build helpers for binaries + macOS app bundles
 ├── .env.example
 ├── package.json
 └── tsconfig.json

@@ -1,0 +1,54 @@
+name: Release macOS app
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos-app:
+    name: Build and attach unsigned MyPi.app
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build universal self-contained macOS app
+        run: make app-universal
+
+      - name: Create release archive
+        id: package
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          ARCHIVE="MyPi-${TAG}-macos-universal.zip"
+          CHECKSUM="${ARCHIVE}.sha256"
+
+          ditto -c -k --sequesterRsrc --keepParent "dist/MyPi.app" "$ARCHIVE"
+          shasum -a 256 "$ARCHIVE" > "$CHECKSUM"
+
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "checksum=$CHECKSUM" >> "$GITHUB_OUTPUT"
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+          fail_on_unmatched_files: true
+          overwrite_files: true

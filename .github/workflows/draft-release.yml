@@ -1,0 +1,61 @@
+name: Prepare draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name to create or update (example: v1.2.3)"
+        required: true
+        type: string
+      name:
+        description: "Release title (defaults to tag)"
+        required: false
+        type: string
+      target_commitish:
+        description: "Branch or commit for the tag when creating it"
+        required: false
+        default: main
+        type: string
+      prerelease:
+        description: "Mark the draft as a prerelease"
+        required: false
+        default: false
+        type: boolean
+      generate_release_notes:
+        description: "Let GitHub generate release notes"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    name: Create or update draft GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_NAME: ${{ inputs.name }}
+        run: |
+          RELEASE_NAME="$INPUT_NAME"
+          if [[ -z "$RELEASE_NAME" ]]; then
+            RELEASE_NAME="$INPUT_TAG"
+          fi
+
+          echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
+          target_commitish: ${{ inputs.target_commitish }}
+          draft: true
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: ${{ inputs.generate_release_notes }}
