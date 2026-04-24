@@ -1,9 +1,15 @@
 # My Pi - A work in Progress, Using Pi as a mini claw(personal assistant)
 
 Run Pi 24/7, talk to it from your phone via **Telegram**, **Slack**, or **Discord**, schedule
-recurring tasks (cron jobs) and receive results (PR URLs, blog links, etc.)
+recurring tasks (cron jobs), and receive results (PR URLs, blog links, etc.)
 directly in chat. Only one channel is active at a time — pick whichever fits
 your workflow.
+
+my-pi also includes an optional **token-protected web dashboard** for monitoring
+runtime state, cron jobs, reminders, active chats, and installed Pi resources.
+Skills and extensions installed through the dashboard are scoped to **my-pi** via
+`~/.my-pi/agent` (or `MY_PI_AGENT_DIR`) so they do **not** modify the main Pi
+harness config in `~/.pi/agent`.
 
 ---
 
@@ -13,8 +19,8 @@ your workflow.
 📱 Telegram ─┐
              ├──► ChatGateway ──► PiSessionManager
 💬 Slack ────┤
-🎮 Discord ──┘         │                │
-                       │    ┌───────────┴─────────────────┐
+🎮 Discord ──┤         │                │
+🖥️ Headless ─┘         │    ┌───────────┴─────────────────┐
                        │    │                              │
                        │  Interactive sessions       Cron sessions
                        │  (one per chat, persistent) (ephemeral, one per job)
@@ -23,8 +29,11 @@ your workflow.
                        │    │                              │
                        │  Custom tools ◄──────────── CronManager
                        │    │
-                       │  send_message (Telegram or Slack)
-                       │  schedule_task / list / delete / toggle
+                       │  send_message / send_file
+                       │  schedule_task / reminders / notes
+                       │
+         Web Portal ───┼──► runtime monitor + resource manager
+                       │    (token auth, my-pi scoped installs)
                        │
                     gateway.ts
               (shared ChatGateway interface)
@@ -78,6 +87,10 @@ echo "Summarise ~/notes/todo.md" | CHANNEL_TYPE=headless npm start
 # Interactive REPL (when stdin is a tty)
 CHANNEL_TYPE=headless npm start
 ```
+
+If you enable the web dashboard in headless mode and do **not** provide a
+prompt on stdin, my-pi stays running as a small local service so the portal
+remains available until you stop it.
 
 Progress / tool-use lines are written to **stderr**; the final answer goes to **stdout**,
 so you can capture it cleanly:
@@ -216,6 +229,34 @@ DEFAULT_WORK_DIR=/Users/you/projects
 
 ---
 
+### Optional – Web dashboard
+
+Enable the portal in `.env`:
+
+```env
+WEB_PORTAL_ENABLED=1
+WEB_PORTAL_HOST=127.0.0.1   # use 0.0.0.0 if you want LAN access
+WEB_PORTAL_PORT=8787
+WEB_PORTAL_TOKEN=replace_with_a_long_random_token
+MY_PI_AGENT_DIR=/Users/you/.my-pi/agent
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787
+```
+
+What the dashboard gives you:
+
+- token-based login
+- runtime overview (uptime, active sessions, queues)
+- cron jobs, reminders, notes count
+- installed extensions and skills
+- install **package sources**, **skill paths**, and **extension paths**
+- update or remove configured package/path sources
+- installs are isolated to my-pi's own agent dir, not the global Pi harness
+
 ### 2 – Install & run
 
 ```bash
@@ -226,6 +267,31 @@ npm start
 You'll see `✅ Pi bridge is running.` and receive a greeting in your chosen channel.
 
 ---
+
+## My-pi scoped skills and extensions
+
+my-pi loads Pi resources from its own agent dir:
+
+```text
+~/.my-pi/agent/
+├── settings.json
+├── extensions/
+├── skills/
+└── ...package installs...
+```
+
+This means you can install Pi packages, extensions, and skills specifically for
+my-pi without polluting `~/.pi/agent`.
+
+The web dashboard supports three install modes:
+
+- **Package source** — e.g. `npm:@scope/pi-tools`, `git:github.com/user/repo`, or a local package directory
+- **Skill path** — a local skill directory containing `SKILL.md` (or a skill markdown file)
+- **Extension path** — a local `.ts` / `.js` extension file or directory
+
+After a successful install, my-pi bumps its resource generation and lazily
+recycles active chat sessions on the next prompt so new resources become
+available without losing saved SQLite history.
 
 ## Usage examples
 
@@ -435,6 +501,8 @@ my-pi/
 │   ├── slack.ts              # Slack bot (Socket Mode, mentions, DMs)
 │   ├── discord.ts            # Discord bot (discord.js v14, mentions, DMs)
 │   ├── headless.ts           # Headless gateway (stdin → stdout, one-shot or REPL)
+│   ├── web-portal.ts         # Token-protected monitoring + install dashboard
+│   ├── my-pi-resources.ts    # my-pi scoped Pi resource inventory / installs
 │   ├── pi-session.ts         # Pi SDK session manager (interactive + cron)
 │   └── pi-tools.ts           # Custom Pi tools (schedule, message, etc.)
 ├── menubar/

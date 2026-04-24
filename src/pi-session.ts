@@ -103,12 +103,29 @@ export interface ProgressUpdate {
   text: string;
 }
 
+export interface PiSessionChatSnapshot {
+  chatId: string;
+  messageCount: number;
+  queuedMessages: number;
+  hasIdleTimer: boolean;
+  resourceGeneration: number;
+}
+
+export interface PiSessionManagerStatus {
+  resourceGeneration: number;
+  activeSessions: number;
+  queuedChats: number;
+  totalQueuedMessages: number;
+  chats: PiSessionChatSnapshot[];
+}
+
 // ─── Per-chat session wrapper ────────────────────────────────────────────────
 
 interface ChatSession {
   session: AgentSession;
   messageCount: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  resourceGeneration: number;
 }
 
 // ─── PiSessionManager ────────────────────────────────────────────────────────
@@ -124,6 +141,8 @@ export class PiSessionManager {
   private readonly queues = new Map<string, Promise<void>>();
   /** Track queue depth so we can reject when overloaded */
   private readonly queueDepths = new Map<string, number>();
+  /** Bumped whenever my-pi resources change so sessions can recycle lazily. */
+  private resourceGeneration = 0;
 
   constructor(
     private readonly defaultSend: MessageSender,
@@ -262,7 +281,16 @@ export class PiSessionManager {
     cwd: string
   ): Promise<ChatSession> {
     const existing = this.sessions.get(chatId);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.resourceGeneration === this.resourceGeneration) {
+        return existing;
+      }
+
+      console.log(
+        `[Sessions] Recycling chat ${chatId} to load updated skills/extensions (generation ${this.resourceGeneration})`
+      );
+      this.evictSession(chatId);
+    }
 
     const customTools = buildCustomTools(
       (message) => this.sendToChat(chatId, message),
@@ -275,6 +303,7 @@ export class PiSessionManager {
 
     const loader = new DefaultResourceLoader({
       cwd,
+      agentDir: config.myPiAgentDir,
       systemPromptOverride: () => INTERACTIVE_SYSTEM_PROMPT,
     });
     await loader.reload();
@@ -333,6 +362,7 @@ export class PiSessionManager {
       session,
       messageCount: 0,
       idleTimer: null,
+      resourceGeneration: this.resourceGeneration,
     };
 
     this.sessions.set(chatId, chat);
@@ -404,6 +434,37 @@ export class PiSessionManager {
     }
   }
 
+  /** Notify the manager that my-pi-scoped skills/extensions changed. */
+  markResourcesUpdated(): void {
+    this.resourceGeneration++;
+    console.log(`[Sessions] Resource generation bumped to ${this.resourceGeneration}`);
+  }
+
+  /** Runtime snapshot for the web dashboard. */
+  getStatusSnapshot(): PiSessionManagerStatus {
+    const chats: PiSessionChatSnapshot[] = [];
+
+    for (const [chatId, chat] of this.sessions.entries()) {
+      chats.push({
+        chatId,
+        messageCount: chat.messageCount,
+        queuedMessages: this.queueDepths.get(chatId) ?? 0,
+        hasIdleTimer: Boolean(chat.idleTimer),
+        resourceGeneration: chat.resourceGeneration,
+      });
+    }
+
+    chats.sort((a, b) => a.chatId.localeCompare(b.chatId));
+
+    return {
+      resourceGeneration: this.resourceGeneration,
+      activeSessions: this.sessions.size,
+      queuedChats: this.queueDepths.size,
+      totalQueuedMessages: Array.from(this.queueDepths.values()).reduce((sum, value) => sum + value, 0),
+      chats,
+    };
+  }
+
   // ── Cron job execution ───────────────────────────────────────────────────────
 
   /**
@@ -420,6 +481,7 @@ export class PiSessionManager {
 
     const loader = new DefaultResourceLoader({
       cwd: job.workDir,
+      agentDir: config.myPiAgentDir,
       systemPromptOverride: () => makeCronSystemPrompt(job),
     });
     await loader.reload();

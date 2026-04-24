@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,10 +20,43 @@ const { MessageStore } = await import("../src/db/message-store.js");
 const { DiscordGateway } = await import("../src/discord.js");
 const { SlackGateway } = await import("../src/slack.js");
 const { TelegramGateway } = await import("../src/telegram.js");
+const { resolveWebPortalEnabled } = await import("../src/config.js");
+const {
+  ManagedResourceNotFoundError,
+  ManagedResourceValidationError,
+} = await import("../src/my-pi-resources.js");
+const { WebPortal } = await import("../src/web-portal.js");
 const {
   makeListRemindersTool,
   makeDeleteReminderTool,
 } = await import("../src/pi-tools.js");
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function reserveTcpPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address !== "object") {
+        server.close();
+        reject(new Error("Failed to reserve a TCP port."));
+        return;
+      }
+
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+  });
+}
 
 test("PiSessionManager persists messages even when a prompt throws", async () => {
   const saved: Array<{ chatId: string; messages: unknown[] }> = [];
@@ -381,5 +416,381 @@ test("MessageStore does not persist synthetic restore-summary messages", async (
     );
   } finally {
     store.close();
+  }
+});
+
+test("WebPortal exposes remove and update resource actions", async () => {
+  const calls: Array<{ action: "remove" | "update"; kind?: string; source: string }> = [];
+  const inventory = {
+    refreshedAt: new Date().toISOString(),
+    agentDir: "/tmp/my-pi-agent",
+    configured: { packages: [], extensionPaths: [], skillPaths: [] },
+    extensions: [],
+    extensionErrors: [],
+    skills: [],
+    skillDiagnostics: [],
+    promptDiagnostics: [],
+    settingsErrors: [],
+  };
+  let resourceUpdates = 0;
+
+  const portal = new WebPortal({
+    config: {
+      channelType: "headless",
+      webPortal: { enabled: true, host: "127.0.0.1", port: 0, token: "secret", sessionTtlMs: 60_000 },
+      dataDir: "/tmp/my-pi",
+      myPiAgentDir: "/tmp/my-pi/agent",
+      cronJobsFile: "/tmp/my-pi/cron.json",
+      remindersFile: "/tmp/my-pi/reminders.json",
+      defaultWorkDir: process.cwd(),
+      sessionIdleTimeoutMs: 1,
+      sessionMaxMessages: 1,
+      maxQueueDepth: 1,
+      rateLimitMs: 1,
+      sqliteDbPath: "/tmp/my-pi/messages.db",
+      notesDbPath: "/tmp/my-pi/notes.db",
+      restoreRecentTurns: 1,
+    },
+    startedAt: Date.now(),
+    resourceManager: {
+      async getInventory() {
+        return inventory;
+      },
+      async refresh() {
+        return inventory;
+      },
+      async install() {
+        return inventory;
+      },
+      async remove(kind: string, source: string) {
+        calls.push({ action: "remove", kind, source });
+        return inventory;
+      },
+      async updatePackage(source: string) {
+        calls.push({ action: "update", source });
+        return inventory;
+      },
+    } as never,
+    piSessions: {
+      getStatusSnapshot() {
+        return { resourceGeneration: 0, activeSessions: 0, queuedChats: 0, totalQueuedMessages: 0, chats: [] };
+      },
+      markResourcesUpdated() {
+        resourceUpdates++;
+      },
+    } as never,
+    cronManager: { listJobs: () => [] } as never,
+    reminderManager: { listReminders: () => [] } as never,
+    noteStore: { count: () => 0 } as never,
+  });
+
+  try {
+    await portal.start();
+    const address = (portal as any).server.address();
+    assert.ok(address && typeof address === "object");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const removeResponse = await fetch(`${baseUrl}/api/resources/remove`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({ kind: "skill-path", source: "/tmp/my-skill" }),
+    });
+    assert.equal(removeResponse.status, 200);
+
+    const updateResponse = await fetch(`${baseUrl}/api/resources/update`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({ kind: "package", source: "npm:@demo/pi-pack" }),
+    });
+    assert.equal(updateResponse.status, 200);
+
+    assert.deepEqual(calls, [
+      { action: "remove", kind: "skill-path", source: "/tmp/my-skill" },
+      { action: "update", source: "npm:@demo/pi-pack" },
+    ]);
+    assert.equal(resourceUpdates, 2);
+  } finally {
+    await portal.stop();
+  }
+});
+
+test("WebPortal streams live status and log events over SSE", async () => {
+  const inventory = {
+    refreshedAt: new Date().toISOString(),
+    agentDir: "/tmp/my-pi-agent",
+    configured: { packages: [], extensionPaths: [], skillPaths: [] },
+    extensions: [],
+    extensionErrors: [],
+    skills: [],
+    skillDiagnostics: [],
+    promptDiagnostics: [],
+    settingsErrors: [],
+  };
+
+  const portal = new WebPortal({
+    config: {
+      channelType: "headless",
+      webPortal: { enabled: true, host: "127.0.0.1", port: 0, token: "secret", sessionTtlMs: 60_000 },
+      dataDir: "/tmp/my-pi",
+      myPiAgentDir: "/tmp/my-pi/agent",
+      cronJobsFile: "/tmp/my-pi/cron.json",
+      remindersFile: "/tmp/my-pi/reminders.json",
+      defaultWorkDir: process.cwd(),
+      sessionIdleTimeoutMs: 1,
+      sessionMaxMessages: 1,
+      maxQueueDepth: 1,
+      rateLimitMs: 1,
+      sqliteDbPath: "/tmp/my-pi/messages.db",
+      notesDbPath: "/tmp/my-pi/notes.db",
+      restoreRecentTurns: 1,
+    },
+    startedAt: Date.now(),
+    resourceManager: {
+      async getInventory() {
+        return inventory;
+      },
+      async refresh() {
+        return inventory;
+      },
+      async install() {
+        return inventory;
+      },
+      async remove() {
+        return inventory;
+      },
+      async updatePackage() {
+        return inventory;
+      },
+    } as never,
+    piSessions: {
+      getStatusSnapshot() {
+        return { resourceGeneration: 3, activeSessions: 1, queuedChats: 1, totalQueuedMessages: 2, chats: [] };
+      },
+      markResourcesUpdated() {},
+    } as never,
+    cronManager: { listJobs: () => [] } as never,
+    reminderManager: { listReminders: () => [] } as never,
+    noteStore: { count: () => 0 } as never,
+  });
+
+  try {
+    await portal.start();
+    portal.publishLog("info", "SSE hello");
+
+    const address = (portal as any).server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/events`, {
+      headers: { authorization: "Bearer secret" },
+    });
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+    assert.ok(response.body);
+
+    const reader = response.body.getReader();
+    let text = "";
+    try {
+      for (let i = 0; i < 6; i++) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += new TextDecoder().decode(value);
+        if (text.includes("event: status") && text.includes("event: log") && text.includes("SSE hello")) {
+          break;
+        }
+      }
+    } finally {
+      await reader.cancel();
+    }
+
+    assert.match(text, /event: status/);
+    assert.match(text, /event: log/);
+    assert.match(text, /SSE hello/);
+  } finally {
+    await portal.stop();
+  }
+});
+
+test("WebPortal maps expected client errors to 4xx responses", async () => {
+  const inventory = {
+    refreshedAt: new Date().toISOString(),
+    agentDir: "/tmp/my-pi-agent",
+    configured: { packages: [], extensionPaths: [], skillPaths: [] },
+    extensions: [],
+    extensionErrors: [],
+    skills: [],
+    skillDiagnostics: [],
+    promptDiagnostics: [],
+    settingsErrors: [],
+  };
+  let resourceUpdates = 0;
+
+  const portal = new WebPortal({
+    config: {
+      channelType: "headless",
+      webPortal: { enabled: true, host: "127.0.0.1", port: 0, token: "secret", sessionTtlMs: 60_000 },
+      dataDir: "/tmp/my-pi",
+      myPiAgentDir: "/tmp/my-pi/agent",
+      cronJobsFile: "/tmp/my-pi/cron.json",
+      remindersFile: "/tmp/my-pi/reminders.json",
+      defaultWorkDir: process.cwd(),
+      sessionIdleTimeoutMs: 1,
+      sessionMaxMessages: 1,
+      maxQueueDepth: 1,
+      rateLimitMs: 1,
+      sqliteDbPath: "/tmp/my-pi/messages.db",
+      notesDbPath: "/tmp/my-pi/notes.db",
+      restoreRecentTurns: 1,
+    },
+    startedAt: Date.now(),
+    resourceManager: {
+      async getInventory() {
+        return inventory;
+      },
+      async refresh() {
+        return inventory;
+      },
+      async install() {
+        throw new ManagedResourceValidationError("Path does not exist: /tmp/missing-skill");
+      },
+      async remove() {
+        throw new ManagedResourceNotFoundError("Skill path is not configured in my-pi: /tmp/missing-skill");
+      },
+      async updatePackage() {
+        throw new ManagedResourceNotFoundError("Package source is not configured in my-pi: npm:@demo/missing");
+      },
+    } as never,
+    piSessions: {
+      getStatusSnapshot() {
+        return { resourceGeneration: 0, activeSessions: 0, queuedChats: 0, totalQueuedMessages: 0, chats: [] };
+      },
+      markResourcesUpdated() {
+        resourceUpdates++;
+      },
+    } as never,
+    cronManager: { listJobs: () => [] } as never,
+    reminderManager: { listReminders: () => [] } as never,
+    noteStore: { count: () => 0 } as never,
+  });
+
+  try {
+    await portal.start();
+    const address = (portal as any).server.address();
+    assert.ok(address && typeof address === "object");
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const invalidJsonResponse = await fetch(`${baseUrl}/api/install`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: "{",
+    });
+    assert.equal(invalidJsonResponse.status, 400);
+
+    const invalidInstallResponse = await fetch(`${baseUrl}/api/install`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({ kind: "skill-path", source: "/tmp/missing-skill" }),
+    });
+    assert.equal(invalidInstallResponse.status, 400);
+
+    const missingSourceResponse = await fetch(`${baseUrl}/api/resources/remove`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer secret",
+      },
+      body: JSON.stringify({ kind: "skill-path", source: "/tmp/missing-skill" }),
+    });
+    assert.equal(missingSourceResponse.status, 404);
+
+    assert.equal(resourceUpdates, 0);
+  } finally {
+    await portal.stop();
+  }
+});
+
+test("resolveWebPortalEnabled respects an explicit disable flag", () => {
+  assert.equal(resolveWebPortalEnabled({ WEB_PORTAL_ENABLED: "0", WEB_PORTAL_TOKEN: "secret" }), false);
+  assert.equal(resolveWebPortalEnabled({ WEB_PORTAL_ENABLED: "false", WEB_PORTAL_TOKEN: "secret" }), false);
+  assert.equal(resolveWebPortalEnabled({ WEB_PORTAL_ENABLED: "1" }), true);
+  assert.equal(resolveWebPortalEnabled({ WEB_PORTAL_TOKEN: "secret" }), true);
+});
+
+test("Headless mode stays alive when only the web portal is enabled", { timeout: 15_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "my-pi-headless-portal-"));
+  const port = await reserveTcpPort();
+  const output: string[] = [];
+  const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      CHANNEL_TYPE: "headless",
+      DEFAULT_WORK_DIR: process.cwd(),
+      WEB_PORTAL_ENABLED: "1",
+      WEB_PORTAL_TOKEN: "secret",
+      WEB_PORTAL_PORT: String(port),
+      CRON_JOBS_FILE: join(dir, "cron-jobs.json"),
+      REMINDERS_FILE: join(dir, "reminders.json"),
+      SQLITE_DB_PATH: join(dir, "messages.db"),
+      NOTES_DB_PATH: join(dir, "notes.db"),
+      MY_PI_HOME_DIR: dir,
+      MY_PI_AGENT_DIR: join(dir, "agent"),
+      HEADLESS_QUIET: "1",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => output.push(chunk));
+  child.stderr.on("data", (chunk) => output.push(chunk));
+
+  try {
+    let response: Response | null = null;
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null || child.signalCode !== null) break;
+      try {
+        response = await fetch(`http://127.0.0.1:${port}/api/status`, {
+          headers: { authorization: "Bearer secret" },
+        });
+        break;
+      } catch {
+        await delay(50);
+      }
+    }
+
+    assert.ok(
+      response,
+      `Timed out waiting for the headless web portal to come up. Output:\n${output.join("")}`
+    );
+    assert.equal(response.status, 200);
+
+    await delay(250);
+    assert.equal(child.exitCode, null, `Headless portal exited too early. Output:\n${output.join("")}`);
+    assert.doesNotMatch(output.join(""), /\[Shutdown\] Received headless-exit/);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGTERM");
+      const exited = await Promise.race([
+        new Promise<boolean>((resolve) => child.once("exit", () => resolve(true))),
+        delay(3_000).then(() => false),
+      ]);
+      if (!exited && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      }
+    }
   }
 });

@@ -12,10 +12,13 @@ import { CronManager, ReminderManager, NoteStore, MessageStore } from "./db/inde
 import { PiSessionManager } from "./pi-session.js";
 import type { ChatGateway, GatewayMessageHandler } from "./gateway.js";
 import type { ProgressUpdate } from "./pi-session.js";
+import { MyPiResourceManager } from "./my-pi-resources.js";
+import { WebPortal } from "./web-portal.js";
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  const startedAt = Date.now();
   console.log(`🚀 Starting Pi ${config.channelType} bridge…`);
 
   // ── Message store (SQLite) ──────────────────────────────────────────────────
@@ -24,6 +27,7 @@ async function main(): Promise<void> {
   // ── Forward-declared so closures and shutdown can capture them safely ──────
   let gateway: ChatGateway | null = null;
   let piSessions: PiSessionManager;
+  let webPortal: WebPortal | null = null;
   let shuttingDown: Promise<void> | null = null;
 
   // ── Cron manager ─────────────────────────────────────────────────────────────
@@ -79,6 +83,10 @@ async function main(): Promise<void> {
   const sendFileTo = async (chatId: string, filePath: string, caption?: string): Promise<void> => {
     await requireGateway().sendFileTo(chatId, filePath, caption);
   };
+
+  // ── my-pi scoped resources (skills/extensions/packages) ────────────────────
+  const resourceManager = new MyPiResourceManager(config.myPiAgentDir);
+  await resourceManager.refresh();
 
   // ── Pi session manager ──────────────────────────────────────────────────────
   piSessions = new PiSessionManager(send, sendTo, sendFile, sendFileTo, cronManager, reminderManager, noteStore, messageStore);
@@ -139,6 +147,14 @@ async function main(): Promise<void> {
       }
 
       try {
+        if (webPortal) {
+          await webPortal.stop();
+        }
+      } catch (err) {
+        console.error("[Shutdown] Failed to stop web portal:", err);
+      }
+
+      try {
         if (gateway) {
           await gateway.stop();
         }
@@ -177,8 +193,27 @@ async function main(): Promise<void> {
     // Load cron + reminders before starting so tools work in one-shot mode
     await cronManager.load();
     await reminderManager.load();
+    if (config.webPortal.enabled) {
+      webPortal = new WebPortal({
+        config,
+        startedAt,
+        resourceManager,
+        piSessions,
+        cronManager,
+        reminderManager,
+        noteStore,
+      });
+      await webPortal.start();
+      console.error(
+        `[Headless] Web portal ready at http://${config.webPortal.host}:${config.webPortal.port}`
+      );
+    }
     console.error(`[Headless] Pi is ready. Working dir: ${config.defaultWorkDir}`);
-    await hg.start();
+    const headlessResult = await hg.start();
+    if (headlessResult === "idle" && config.webPortal.enabled) {
+      console.error("[Headless] No stdin prompt detected. Keeping the web portal service alive.");
+      return;
+    }
     // After start() returns (one-shot or REPL exited), shut down cleanly
     await shutdown("headless-exit");
     return;
@@ -215,6 +250,20 @@ async function main(): Promise<void> {
   await cronManager.load();
   await reminderManager.load();
 
+  // ── Optional web dashboard ──────────────────────────────────────────────────
+  if (config.webPortal.enabled) {
+    webPortal = new WebPortal({
+      config,
+      startedAt,
+      resourceManager,
+      piSessions,
+      cronManager,
+      reminderManager,
+      noteStore,
+    });
+    await webPortal.start();
+  }
+
   // ── Startup notification ─────────────────────────────────────────────────────
   try {
     await send(
@@ -229,6 +278,11 @@ async function main(): Promise<void> {
   }
 
   console.log(`✅ Pi ${config.channelType} bridge is running. Ctrl+C to stop.`);
+  if (config.webPortal.enabled) {
+    console.log(
+      `🌐 Web portal ready at http://${config.webPortal.host}:${config.webPortal.port} (token protected)`
+    );
+  }
 }
 
 main().catch((err) => {

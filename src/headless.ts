@@ -28,6 +28,8 @@ const CHAT_ID = process.env.HEADLESS_CHAT_ID ?? "headless";
 const QUIET = process.env.HEADLESS_QUIET === "1";
 const ONE_SHOT_PROMPT = process.env.HEADLESS_PROMPT?.trim();
 
+export type HeadlessStartResult = "one-shot" | "repl" | "idle";
+
 export class HeadlessGateway implements ChatGateway {
   private rl: readline.Interface | null = null;
   private stopped = false;
@@ -55,11 +57,11 @@ export class HeadlessGateway implements ChatGateway {
 
   // ── Start (called by index.ts after construction) ──────────────────────────
 
-  async start(): Promise<void> {
+  async start(): Promise<HeadlessStartResult> {
     // ── Mode 1: single prompt from env var ──────────────────────────────────
     if (ONE_SHOT_PROMPT) {
       await this.dispatch(ONE_SHOT_PROMPT);
-      return;
+      return "one-shot";
     }
 
     // ── Mode 2: single prompt from piped stdin (non-tty) ────────────────────
@@ -67,8 +69,9 @@ export class HeadlessGateway implements ChatGateway {
       const prompt = await readAllStdin();
       if (prompt.trim()) {
         await this.dispatch(prompt.trim());
+        return "one-shot";
       }
-      return;
+      return "idle";
     }
 
     // ── Mode 3: interactive REPL ─────────────────────────────────────────────
@@ -94,6 +97,7 @@ export class HeadlessGateway implements ChatGateway {
     }
 
     rl.close();
+    return "repl";
   }
 
   // ── Internal ───────────────────────────────────────────────────────────────

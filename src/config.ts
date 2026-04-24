@@ -34,6 +34,14 @@ export interface SlackConfig {
   allowedUsers: string[];
 }
 
+export interface WebPortalConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  token: string;
+  sessionTtlMs: number;
+}
+
 // ─── Main config ────────────────────────────────────────────────────────────
 
 export interface Config {
@@ -41,7 +49,10 @@ export interface Config {
   telegram?: TelegramConfig;
   slack?: SlackConfig;
   discord?: DiscordConfig;
+  webPortal: WebPortalConfig;
 
+  dataDir: string;
+  myPiAgentDir: string;
   cronJobsFile: string;
   remindersFile: string;
   defaultWorkDir: string;
@@ -65,6 +76,18 @@ function requireEnv(envVar: string): string {
 
 function optionalEnv(envVar: string): string | undefined {
   return process.env[envVar] || undefined;
+}
+
+function envFlag(envVar: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[envVar]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+export function resolveWebPortalEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.WEB_PORTAL_ENABLED !== undefined) {
+    return envFlag("WEB_PORTAL_ENABLED", env);
+  }
+  return Boolean(env.WEB_PORTAL_TOKEN?.trim());
 }
 
 // ─── Build ──────────────────────────────────────────────────────────────────
@@ -107,6 +130,9 @@ if (channelType === "headless") {
   };
 }
 
+const dataDir = process.env.MY_PI_HOME_DIR ?? resolve(homedir(), ".my-pi");
+const myPiAgentDir = process.env.MY_PI_AGENT_DIR ?? resolve(dataDir, "agent");
+
 const defaultWorkDir = process.env.DEFAULT_WORK_DIR ?? homedir();
 if (!existsSync(defaultWorkDir)) {
   throw new Error(
@@ -115,16 +141,31 @@ if (!existsSync(defaultWorkDir)) {
   );
 }
 
+const webPortalEnabled = resolveWebPortalEnabled();
+const webPortalToken = optionalEnv("WEB_PORTAL_TOKEN")?.trim() ?? "";
+if (webPortalEnabled && !webPortalToken) {
+  throw new Error("WEB_PORTAL_TOKEN is required when WEB_PORTAL_ENABLED is set.");
+}
+
 export const config: Config = {
   channelType,
   telegram,
   slack,
   discord,
+  webPortal: {
+    enabled: webPortalEnabled,
+    host: process.env.WEB_PORTAL_HOST ?? "127.0.0.1",
+    port: Number(process.env.WEB_PORTAL_PORT) || 8787,
+    token: webPortalToken,
+    sessionTtlMs: Number(process.env.WEB_PORTAL_SESSION_TTL_MS) || 24 * 60 * 60 * 1000,
+  },
 
+  dataDir,
+  myPiAgentDir,
   cronJobsFile:
-    process.env.CRON_JOBS_FILE ?? resolve(homedir(), ".my-pi", "cron-jobs.json"),
+    process.env.CRON_JOBS_FILE ?? resolve(dataDir, "cron-jobs.json"),
   remindersFile:
-    process.env.REMINDERS_FILE ?? resolve(homedir(), ".my-pi", "reminders.json"),
+    process.env.REMINDERS_FILE ?? resolve(dataDir, "reminders.json"),
   defaultWorkDir,
 
   // Tunables – override via env vars, sane defaults for Raspberry Pi
@@ -132,7 +173,7 @@ export const config: Config = {
   sessionMaxMessages:   Number(process.env.SESSION_MAX_MESSAGES)    || 40,
   rateLimitMs:          Number(process.env.RATE_LIMIT_MS)           || 2_000,
   maxQueueDepth:        Number(process.env.MAX_QUEUE_DEPTH)         || 3,
-  sqliteDbPath:          process.env.SQLITE_DB_PATH ?? resolve(homedir(), ".my-pi", "messages.db"),
-  notesDbPath:           process.env.NOTES_DB_PATH  ?? resolve(homedir(), ".my-pi", "notes.db"),
+  sqliteDbPath:          process.env.SQLITE_DB_PATH ?? resolve(dataDir, "messages.db"),
+  notesDbPath:           process.env.NOTES_DB_PATH  ?? resolve(dataDir, "notes.db"),
   restoreRecentTurns:    Number(process.env.RESTORE_RECENT_TURNS)   || 5,
 };
