@@ -259,12 +259,66 @@ What the dashboard gives you:
 
 ### 2 – Install & run
 
+#### Install dependencies
+
 ```bash
 npm install
+```
+
+#### Run from source
+
+```bash
+# Start normally
 npm start
+
+# Watch mode – auto-restarts on source changes (development)
+npm run dev
 ```
 
 You'll see `✅ Pi bridge is running.` and receive a greeting in your chosen channel.
+
+#### Run tests
+
+```bash
+npm test
+```
+
+#### Build & run a compiled binary (production)
+
+Use [Bun](https://bun.sh) to compile a self-contained binary — no Node or Bun
+runtime is required on the target machine once built.
+
+```bash
+# Build for the current machine (minified release)
+npm run build          # → dist/my-pi
+
+# Debug build (unminified, inline source maps)
+npm run build:debug    # → dist/my-pi-debug
+
+# Platform-specific builds
+npm run build:mac-arm  # → dist/my-pi-mac-arm64
+npm run build:mac-x64  # → dist/my-pi-mac-x64
+npm run build:linux-arm # → dist/my-pi-linux-arm64
+npm run build:linux-x64 # → dist/my-pi-linux-x64
+npm run build:all      # → all supported targets
+
+# Run the compiled binary directly
+./dist/my-pi
+
+# Convenience script: builds (if needed) then runs the binary
+./run.sh
+```
+
+Makefile equivalents (also handles Pi SDK runtime-asset copying into `dist/`):
+
+```bash
+make build        # compile + copy assets  → dist/my-pi
+make build-debug  # compile with source maps → dist/my-pi-debug
+make build-all    # all platform targets
+make run          # build (if needed) then run
+make install      # copy dist/my-pi to /usr/local/bin/my-pi
+make clean        # remove dist/
+```
 
 ---
 
